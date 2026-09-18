@@ -24,7 +24,22 @@ cp .env.local.example .env.local
 - `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` — not needed until Strava sync (Next Steps #5)
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — you already have the Google Cloud project; add these when wiring up Calendar sync (Next Steps #6)
 
-Apply the database schema (`supabase/migrations/0001_init.sql`) via the Supabase CLI or by pasting it into the SQL editor in your Supabase project dashboard.
+Apply the migrations in `supabase/migrations/` **in filename order** via the Supabase CLI or by pasting each into the SQL editor in your Supabase project dashboard:
+
+| Migration | What it adds |
+| --- | --- |
+| `0001_init.sql` | Core schema from `project-spec.md`, plus RLS on every table |
+| `0002_lift_logger.sql` | Exercises, routines, PRs, and `lift_sets.exercise_id` |
+| `0003_seed_exercises.sql` | 876 built-in exercises from free-exercise-db |
+| `0004_workout_timing.sql` | Workout start/finish timestamps and set ordering |
+| `0005_rest_preferences.sql` | Per-exercise rest-timer overrides |
+| `0006_weekly_calendar.sql` | Session start time and duration, busy-block timestamps |
+
+Run the test suite (the training rules — volume, PRs, week math, grid layout — are covered without needing a database):
+
+```bash
+npm test
+```
 
 Run the dev server:
 
@@ -34,13 +49,27 @@ npm run dev
 
 ## Project status
 
-Scaffold + initial schema are done (Next Steps #1–#2 in `project-spec.md`). Remaining work — lift logger, weekly calendar, Strava sync, Google Calendar sync, conflict-check logic — is best done iteratively with a real dev server and terminal access, e.g. by opening Claude Code in this directory.
+Done — Next Steps #1–#4 in `project-spec.md`:
+
+- **Scaffold and schema** (#1–#2)
+- **Lift logger** (#3, `specs/lift-logger.md`) — exercise library and custom exercises, set logging with previous-performance reference, rest timer, supersets, PR detection, history, per-exercise and per-routine progress charts, routines
+- **Weekly calendar** (#4, `specs/weekly-calendar.md`) — week grid with busy blocks, create/edit/delete runs and lifts, reschedule by drag or by form, mark complete/skipped, manual run actuals, and the start-planned-lift handoff into the logger
+
+Remaining: Strava sync (#5), Google Calendar sync (#6), and the conflict-rule engine (#7). The calendar reserves where conflict warnings render — `src/lib/calendar/conflicts.ts` is the call site, and it returns nothing until the rules exist.
+
+**Time zone:** v1 is single-user, so the app's zone is one constant, `APP_TIME_ZONE` in `src/lib/time.ts`. Phase 2 swaps it for a user column in that one place.
 
 ## Structure
 
 ```
-src/app/            Next.js App Router pages
-src/lib/supabase/   Supabase client (browser) and server client helpers
-supabase/migrations/ SQL schema
+src/app/             Next.js App Router pages and server actions
+src/components/      Shared UI; the only client components are the rest
+                     timer, the charts and the calendar grid
+src/lib/             Pure rules and queries, with co-located *.test.ts
+src/lib/lift/        Lift logger: volume, PRs, supersets, routines, charts
+src/lib/calendar/    Week grid: layout geometry, run maths, view model
+src/lib/supabase/    Supabase client (browser) and server client helpers
+supabase/migrations/ SQL schema, applied in filename order
 project-spec.md      Full project spec
+specs/               Per-feature specs
 ```

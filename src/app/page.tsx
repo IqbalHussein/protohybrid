@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { getActiveWorkout, getWorkoutHistory, requireUser } from "@/lib/lift/queries";
+import { requireUser } from "@/lib/auth";
+import { getActiveWorkout, getWorkoutHistory } from "@/lib/lift/queries";
 import { formatDuration } from "@/lib/lift/math";
 import { totalVolume } from "@/lib/lift/stats";
 import { startWorkout } from "./workout/actions";
@@ -41,7 +42,10 @@ export default async function Home() {
         </form>
       )}
 
-      <nav className="grid grid-cols-2 gap-2">
+      <nav className="grid grid-cols-3 gap-2">
+        <Link href="/calendar" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          Week
+        </Link>
         <Link href="/routines" className="rounded border border-neutral-300 px-4 py-3 text-center">
           Routines
         </Link>

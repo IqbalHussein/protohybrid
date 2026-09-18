@@ -2,20 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireUser } from "@/lib/lift/queries";
-
-function requiredString(formData: FormData, key: string): string {
-  const value = String(formData.get(key) ?? "").trim();
-  if (!value) throw new Error(`Missing ${key}`);
-  return value;
-}
-
-function optionalNumber(formData: FormData, key: string): number | null {
-  const raw = String(formData.get(key) ?? "").trim();
-  if (!raw) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
+import { requireUser, type UserClient } from "@/lib/auth";
+import { optionalNumber, requiredString } from "@/lib/forms";
 
 export async function createRoutine(formData: FormData) {
   const { supabase, user } = await requireUser();
@@ -154,7 +142,7 @@ export async function moveRoutineExercise(formData: FormData) {
 
 /** Re-close position gaps left by a removal, so 0,1,3 becomes 0,1,2. */
 async function compactPositions(
-  supabase: Awaited<ReturnType<typeof requireUser>>["supabase"],
+  supabase: UserClient,
   routineId: string,
 ) {
   const { data: rows } = await supabase

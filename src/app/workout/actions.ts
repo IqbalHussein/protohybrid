@@ -2,69 +2,36 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { getWorkout, getRestPreferences, requireUser } from "@/lib/lift/queries";
-import { mondayOf, toDateString } from "@/lib/lift/week";
+import { requireUser } from "@/lib/auth";
+import { optionalNumber, requiredString } from "@/lib/forms";
+import { findOrCreatePlanForDate } from "@/lib/plans";
+import { todayInZone } from "@/lib/time";
+import { getWorkout, getRestPreferences } from "@/lib/lift/queries";
 import { findPrs, type PrCandidate, type PrSet } from "@/lib/lift/prs";
 import { routineTargetsFromSets } from "@/lib/lift/routines";
 import { shouldStartRest, type GroupedExercise } from "@/lib/lift/supersets";
 import { DEFAULT_REST_SECONDS, type SetType } from "@/lib/lift/types";
 
-/** Read an optional number out of a form field; blank and unparseable both mean null. */
-function optionalNumber(formData: FormData, key: string): number | null {
-  const raw = String(formData.get(key) ?? "").trim();
-  if (!raw) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
-}
-
-function requiredString(formData: FormData, key: string): string {
-  const value = String(formData.get(key) ?? "").trim();
-  if (!value) throw new Error(`Missing ${key}`);
-  return value;
-}
-
-// sessions.plan_id is NOT NULL and plans is unique on (user_id,
-// week_start_date), so an ad-hoc workout can't just insert a session — it has
-// to resolve this week's plan first. Ad-hoc sessions therefore still belong to
-// the weekly plan and show up on the calendar.
-async function findOrCreatePlanForToday() {
-  const { supabase, user } = await requireUser();
-  const weekStart = mondayOf(new Date());
-
-  const { data: existing } = await supabase
-    .from("plans")
-    .select("id")
-    .eq("user_id", user.id)
-    .eq("week_start_date", weekStart)
-    .maybeSingle();
-
-  if (existing) return existing.id;
-
-  const { data, error } = await supabase
-    .from("plans")
-    .insert({ user_id: user.id, week_start_date: weekStart })
-    .select("id")
-    .single();
-
-  if (error) throw new Error(`Could not create plan: ${error.message}`);
-  return data.id;
-}
-
 /**
  * Create today's session plus its lift_details and open the logging screen.
  * Shared by the ad-hoc "Start workout" button and by starting from a routine,
  * which differ only in the focus text and whether routine_id is set.
+ *
+ * An ad-hoc workout can't just insert a session: sessions.plan_id is NOT NULL,
+ * so it resolves today's plan first and therefore still shows up on the
+ * calendar rather than existing off to one side.
  */
 async function createWorkout(focus: string, routineId: string | null): Promise<string> {
-  const { supabase } = await requireUser();
-  const planId = await findOrCreatePlanForToday();
+  const { supabase, user } = await requireUser();
+  const today = todayInZone();
+  const planId = await findOrCreatePlanForDate(supabase, user.id, today);
 
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
     .insert({
       plan_id: planId,
       type: "lift",
-      planned_date: toDateString(new Date()),
+      planned_date: today,
       status: "planned",
       routine_id: routineId,
     })
@@ -224,6 +191,7 @@ export async function deleteWorkout(formData: FormData) {
 
   revalidatePath("/");
   revalidatePath("/history");
+  revalidatePath("/calendar");
   redirect("/");
 }
 
@@ -410,6 +378,9 @@ export async function finishWorkout(formData: FormData) {
     .eq("id", sessionId);
   if (error) throw new Error(`Could not finish workout: ${error.message}`);
 
+  // A lift completes by being logged, which is how the calendar learns it
+  // happened (weekly-calendar spec flow #4).
+  revalidatePath("/calendar");
   redirect(`/workout/${sessionId}/summary`);
 }
 

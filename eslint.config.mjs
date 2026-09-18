@@ -10,6 +10,14 @@ const eslintConfig = [
   // code nobody wrote.
   { ignores: [".next/**", "node_modules/**", "next-env.d.ts"] },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
+  {
+    rules: {
+      // An underscore marks a parameter that is part of a signature on
+      // purpose but not used yet — findConflicts reserves the conflict-rule
+      // arguments this way.
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+    },
+  },
 ];
 
 export default eslintConfig;

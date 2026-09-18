@@ -1,21 +1,9 @@
-import { createClient } from "@/lib/supabase/server";
+import { requireUser, type UserClient } from "@/lib/auth";
 import type { HistorySet } from "./stats";
 import type { Exercise, LiftSet, Routine, RoutineExercise } from "./types";
 
-/**
- * Every query here runs as the signed-in user with RLS enforced, so none of
- * them filter by user_id explicitly — the policies in 0001/0002/0005 do it.
- * Middleware already redirects anonymous requests, so a missing user here is a
- * programming error rather than a normal state, and throwing is correct.
- */
-export async function requireUser() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not signed in");
-  return { supabase, user };
-}
+// Every query here runs as the signed-in user with RLS enforced, so none of
+// them filter by user_id explicitly — the policies in 0001/0002/0005 do it.
 
 /** Columns of lift_sets that make up a LiftSet, as one PostgREST select list. */
 const SET_COLUMNS =
@@ -276,7 +264,7 @@ export async function getActiveWorkout() {
  * impossible in practice) are dropped rather than dated with a guess.
  */
 async function withSessionDates(
-  supabase: Awaited<ReturnType<typeof requireUser>>["supabase"],
+  supabase: UserClient,
   rows: {
     lift_details_id: string;
     exercise_id: string;
