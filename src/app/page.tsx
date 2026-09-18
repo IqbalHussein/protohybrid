@@ -1,11 +1,14 @@
 import Link from "next/link";
 import { getActiveWorkout, getWorkoutHistory, requireUser } from "@/lib/lift/queries";
 import { formatDuration } from "@/lib/lift/math";
+import { totalVolume } from "@/lib/lift/stats";
 import { startWorkout } from "./workout/actions";
+
+const RECENT_LIMIT = 5;
 
 export default async function Home() {
   const { user } = await requireUser();
-  const [active, history] = await Promise.all([getActiveWorkout(), getWorkoutHistory()]);
+  const [active, history] = await Promise.all([getActiveWorkout(), getWorkoutHistory(RECENT_LIMIT)]);
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-10">
@@ -38,30 +41,44 @@ export default async function Home() {
         </form>
       )}
 
+      <nav className="grid grid-cols-2 gap-2">
+        <Link href="/routines" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          Routines
+        </Link>
+        <Link href="/history" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          History
+        </Link>
+      </nav>
+
       <section className="flex flex-col gap-3">
-        <h2 className="text-lg font-medium">History</h2>
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-lg font-medium">Recent workouts</h2>
+          {history.length === RECENT_LIMIT ? (
+            <Link href="/history" className="text-sm text-neutral-500 underline">
+              All
+            </Link>
+          ) : null}
+        </div>
         {history.length === 0 ? (
           <p className="text-sm text-neutral-500">
             No completed workouts yet. Your first one will show up here.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {history.map((s) => {
-              const d = Array.isArray(s.lift_details) ? s.lift_details[0] : s.lift_details;
-              return (
-                <li key={s.id}>
-                  <Link
-                    href={`/workout/${s.id}/summary`}
-                    className="flex items-baseline justify-between rounded border border-neutral-200 px-4 py-3"
-                  >
-                    <span className="font-medium capitalize">{d?.focus ?? "Workout"}</span>
-                    <span className="text-sm text-neutral-500">
-                      {s.planned_date} · {formatDuration(d?.started_at ?? null, d?.completed_at ?? null)}
-                    </span>
-                  </Link>
-                </li>
-              );
-            })}
+            {history.map((w) => (
+              <li key={w.sessionId}>
+                <Link
+                  href={`/workout/${w.sessionId}/summary`}
+                  className="flex items-baseline justify-between gap-2 rounded border border-neutral-200 px-4 py-3"
+                >
+                  <span className="font-medium capitalize">{w.focus}</span>
+                  <span className="text-sm tabular-nums text-neutral-500">
+                    {w.date} · {formatDuration(w.startedAt, w.completedAt)} ·{" "}
+                    {totalVolume(w.exercises.flatMap((e) => e.sets)).toLocaleString()} lb
+                  </span>
+                </Link>
+              </li>
+            ))}
           </ul>
         )}
       </section>

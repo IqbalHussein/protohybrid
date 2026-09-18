@@ -25,3 +25,16 @@ export function formatDuration(startedAt: string | null, endedAt: string | null)
   if (mins < 60) return `${mins}m`;
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
+
+// Rest-timer display: m:ss, clamped at zero so an overrun never renders "-0:03".
+export function formatSeconds(totalSeconds: number): string {
+  const s = Math.max(0, Math.round(totalSeconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// Weights and e1RMs are displayed to one decimal at most — 102.5 lb is real,
+// 102.53333 is a floating-point artifact of the Epley multiply.
+export function roundTo(value: number, decimals = 1): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
