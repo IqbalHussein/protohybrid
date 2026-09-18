@@ -41,6 +41,14 @@ Run the test suite (the training rules — volume, PRs, week math, grid layout �
 npm test
 ```
 
+To check the migrations themselves, with Docker running:
+
+```bash
+npm run test:db
+```
+
+That applies every migration in order to a throwaway Postgres container and asserts the schema behaves — the constraints, the session-type triggers, and the RLS policies as a signed-in user rather than as the table owner (policies do nothing for the owner, so an owner-run check proves nothing). Supabase's `auth` schema, `auth.uid()` and `authenticated` role are stubbed in `supabase/tests/`. Your real project is never touched.
+
 Run the dev server:
 
 ```bash

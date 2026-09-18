@@ -57,9 +57,19 @@ declare
   actual session_type;
 begin
   expected := case tg_argv[0] when 'run' then 'run'::session_type else 'lift'::session_type end;
+
+  -- This runs as the calling user, so RLS applies: a session belonging to
+  -- someone else reads as missing rather than as the wrong type. Saying so is
+  -- clearer than reporting it as a "NULL session", and the row is refused
+  -- either way — by this or by the table's own policy.
   select type into actual from sessions where id = new.session_id;
 
-  if actual is distinct from expected then
+  if actual is null then
+    raise exception 'session % does not exist, or is not yours', new.session_id
+      using errcode = 'foreign_key_violation';
+  end if;
+
+  if actual <> expected then
     raise exception 'session % is a % session; it cannot have % details',
       new.session_id, actual, expected;
   end if;
