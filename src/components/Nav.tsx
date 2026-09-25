@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUser } from "@/lib/lift/queries";
 
 const LINKS = [
   ["/", "Today"],
@@ -12,10 +12,7 @@ const LINKS = [
 
 // Rendered from the root layout; renders nothing on /login.
 export async function Nav() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const { user } = await getCurrentUser();
   if (!user) return null;
 
   return (

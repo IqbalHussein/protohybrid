@@ -383,8 +383,10 @@ export async function saveWorkoutAsRoutine(formData: FormData) {
     if (exError) throw new Error(`Could not save routine: ${exError.message}`);
   }
 
-  // Link this workout to the routine so it counts toward its progress chart.
-  await supabase.from("sessions").update({ routine_id: routine.id }).eq("id", sessionId);
+  // Link this workout to the new routine so it counts toward its progress
+  // chart — unless it was started from another routine, whose history it
+  // belongs to.
+  await supabase.from("sessions").update({ routine_id: routine.id }).eq("id", sessionId).is("routine_id", null);
 
   revalidatePath("/routines");
   redirect(`/routines/${routine.id}`);

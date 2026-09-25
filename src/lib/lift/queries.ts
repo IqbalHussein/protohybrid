@@ -8,11 +8,16 @@ import type { Exercise, LiftSet, PrRecordType, SetType } from "./types";
 // Middleware already bounces signed-out requests to /login; this covers a
 // session that expires mid-request. Cached so a page and the helpers it calls
 // share one auth round-trip.
-export const requireUser = cache(async () => {
+export const getCurrentUser = cache(async () => {
   const supabase = await createClient();
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  return { supabase, user };
+});
+
+export const requireUser = cache(async () => {
+  const { supabase, user } = await getCurrentUser();
   if (!user) redirect("/login");
   return { supabase, user };
 });

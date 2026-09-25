@@ -47,9 +47,11 @@ export function RestTimer() {
   const [endsAt, setEndsAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const fired = useRef(false);
+  const current = useRef<number | null>(null);
 
   const set = useCallback((value: number | null) => {
     fired.current = false;
+    current.current = value;
     setEndsAt(value);
     setNow(Date.now());
     store(value);
@@ -59,7 +61,10 @@ export function RestTimer() {
   useEffect(() => {
     try {
       const saved = Number(sessionStorage.getItem(STORAGE_KEY));
-      if (saved > Date.now()) setEndsAt(saved);
+      if (saved > Date.now()) {
+        current.current = saved;
+        setEndsAt(saved);
+      }
     } catch {}
   }, []);
 
@@ -83,7 +88,11 @@ export function RestTimer() {
       if (t >= endsAt && !fired.current) {
         fired.current = true;
         notifyDone();
-        setTimeout(() => set(null), 3000);
+        // Hide the finished timer shortly after — unless a new one has
+        // started in the meantime (next set logged quickly).
+        setTimeout(() => {
+          if (current.current === endsAt) set(null);
+        }, 3000);
       }
     }, 250);
     return () => clearInterval(id);

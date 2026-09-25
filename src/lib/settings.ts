@@ -27,7 +27,7 @@ export const getSettings = cache(async (): Promise<UserSettings> => {
     .eq("user_id", user.id)
     .maybeSingle();
 
-  const settings: UserSettings = data ?? DEFAULTS;
+  const settings: UserSettings = { ...DEFAULTS, ...data };
   if (!data) {
     await supabase
       .from("user_settings")
@@ -35,22 +35,30 @@ export const getSettings = cache(async (): Promise<UserSettings> => {
   }
 
   if (!settings.conflict_rules_seeded) {
-    const { error } = await supabase.from("conflict_rules").insert(
-      DEFAULT_RULES.map((r) => ({
-        user_id: user.id,
-        name: r.name,
-        rule_type: r.rule_type,
-        params: r.params,
-        enabled: r.enabled,
-      })),
-    );
-    if (!error) {
-      await supabase
-        .from("user_settings")
-        .update({ conflict_rules_seeded: true })
-        .eq("user_id", user.id);
-      settings.conflict_rules_seeded = true;
+    // Claim the seeding first so two concurrent first requests can't both
+    // insert the defaults: only the request whose update flips the flag seeds.
+    const { data: claimed } = await supabase
+      .from("user_settings")
+      .update({ conflict_rules_seeded: true })
+      .eq("user_id", user.id)
+      .eq("conflict_rules_seeded", false)
+      .select("user_id");
+    if (claimed?.length) {
+      const { error } = await supabase.from("conflict_rules").insert(
+        DEFAULT_RULES.map((r) => ({
+          user_id: user.id,
+          name: r.name,
+          rule_type: r.rule_type,
+          params: r.params,
+          enabled: r.enabled,
+        })),
+      );
+      if (error) {
+        await supabase.from("user_settings").update({ conflict_rules_seeded: false }).eq("user_id", user.id);
+        throw new Error(`Could not create default conflict rules: ${error.message}`);
+      }
     }
+    settings.conflict_rules_seeded = true;
   }
 
   return settings;
