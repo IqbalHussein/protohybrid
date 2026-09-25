@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkout } from "@/lib/lift/queries";
+import { formatDate } from "@/lib/dates";
 import { countsAsWork, formatDuration, setVolume } from "@/lib/lift/math";
 import type { PrRecordType } from "@/lib/lift/types";
 
@@ -16,11 +17,12 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
   const { id } = await params;
   const workout = await getWorkout(id);
   if (!workout) notFound();
+  if (workout.status !== "completed") redirect(`/workout/${id}`);
 
   const supabase = await createClient();
   const { data: prs } = await supabase
     .from("personal_records")
-    .select("id, record_type, value, weight, reps, exercises(name)")
+    .select("id, exercise_id, record_type, value, weight, reps, exercises(name)")
     .eq("session_id", id);
 
   const workingSets = workout.exercises.flatMap((e) => e.sets).filter((s) => countsAsWork(s.set_type));
@@ -28,11 +30,15 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-8">
-      <header className="flex items-baseline justify-between gap-4">
-        <h1 className="text-xl font-semibold capitalize">{workout.focus}</h1>
-        <Link href="/" className="text-sm text-neutral-500 underline">
-          Home
-        </Link>
+      <header className="flex flex-col gap-1">
+        <div className="flex items-baseline justify-between gap-4">
+          <h1 className="text-xl font-semibold capitalize">{workout.focus}</h1>
+          <Link href={`/workout/${id}`} className="text-sm text-neutral-500 underline">
+            Edit workout
+          </Link>
+        </div>
+        <p className="text-sm text-neutral-500">{formatDate(workout.plannedDate)}</p>
+        {workout.notes ? <p className="whitespace-pre-line text-sm text-neutral-700">{workout.notes}</p> : null}
       </header>
 
       <dl className="grid grid-cols-3 gap-3 text-center">
@@ -61,7 +67,9 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
                   key={pr.id}
                   className="flex items-baseline justify-between rounded border border-neutral-200 px-4 py-2.5 text-sm"
                 >
-                  <span className="font-medium">{(ex as { name?: string } | null)?.name}</span>
+                  <Link href={`/exercises/${pr.exercise_id}`} className="font-medium hover:underline">
+                    {(ex as { name?: string } | null)?.name}
+                  </Link>
                   <span className="text-neutral-600">
                     {PR_LABELS[pr.record_type as PrRecordType]} ·{" "}
                     {Math.round(Number(pr.value) * 10) / 10}
@@ -78,7 +86,9 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
         <h2 className="text-lg font-medium">Sets</h2>
         {workout.exercises.map(({ exercise, sets }) => (
           <div key={exercise.id} className="rounded border border-neutral-200 px-4 py-3">
-            <p className="font-medium">{exercise.name}</p>
+            <Link href={`/exercises/${exercise.id}`} className="font-medium hover:underline">
+              {exercise.name}
+            </Link>
             <p className="mt-1 text-sm text-neutral-600">
               {sets
                 .map((s) => `${s.weight ?? "—"}×${s.reps ?? "—"}${s.set_type === "warmup" ? " (w)" : ""}`)
