@@ -1,7 +1,7 @@
 import { ExercisePicker } from "@/components/ExercisePicker";
-import { addExerciseToWorkout } from "../../actions";
+import { addExerciseToRoutine } from "../../actions";
 
-export default async function AddExercisePage({
+export default async function AddRoutineExercisePage({
   params,
   searchParams,
 }: {
@@ -11,10 +11,10 @@ export default async function AddExercisePage({
   const { id } = await params;
   return (
     <ExercisePicker
-      title="Add exercise"
-      backHref={`/workout/${id}`}
-      hidden={{ sessionId: id }}
-      addAction={addExerciseToWorkout}
+      title="Add exercise to routine"
+      backHref={`/routines/${id}`}
+      hidden={{ routineId: id }}
+      addAction={addExerciseToRoutine}
       query={await searchParams}
     />
   );
