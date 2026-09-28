@@ -1,123 +1,88 @@
 import Link from "next/link";
-import { getActiveWorkout, getRoutines } from "@/lib/lift/queries";
-import { getSessionsBetween, getWeek, sessionLabel } from "@/lib/calendar";
-import { getSettings } from "@/lib/settings";
-import { addDays, formatDate, mondayOf, todayIn } from "@/lib/dates";
-import { plannedSummary, runActualSummary } from "@/lib/summaries";
-import { startPlannedWorkout, startWorkout } from "./workout/actions";
+import { requireUser } from "@/lib/auth";
+import { getActiveWorkout, getWorkoutHistory } from "@/lib/lift/queries";
+import { formatDuration } from "@/lib/lift/math";
+import { totalVolume } from "@/lib/lift/stats";
+import { startWorkout } from "./workout/actions";
+
+const RECENT_LIMIT = 5;
 
 export default async function Home() {
-  const { timezone } = await getSettings();
-  const today = todayIn(timezone);
-  const [active, routines, todays, week, recent] = await Promise.all([
-    getActiveWorkout(),
-    getRoutines(),
-    getSessionsBetween(today, addDays(today, 1)),
-    getWeek(mondayOf(today)),
-    getSessionsBetween(addDays(today, -14), today),
-  ]);
-  const completed = recent.filter((s) => s.status === "completed").reverse().slice(0, 5);
+  const { user } = await requireUser();
+  const [active, history] = await Promise.all([getActiveWorkout(), getWorkoutHistory(RECENT_LIMIT)]);
 
   return (
-    <main className="mx-auto flex max-w-2xl flex-col gap-8 px-4 py-8">
-      <header>
-        <h1 className="text-2xl font-semibold">{formatDate(today, { weekday: "long", month: "long" })}</h1>
+    <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-10">
+      <header className="flex items-baseline justify-between gap-4">
+        <h1 className="text-2xl font-semibold">ProtoHybrid</h1>
+        <form action="/auth/signout" method="post">
+          <button className="text-sm text-neutral-500 underline">Sign out</button>
+        </form>
       </header>
+      <p className="-mt-6 text-sm text-neutral-500">{user.email}</p>
 
-      {week.conflicts.length ? (
-        <Link href="/calendar" className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          ⚠ {week.conflicts.length} scheduling conflict{week.conflicts.length > 1 ? "s" : ""} this week — review on the calendar
+      {active ? (
+        <Link
+          href={`/workout/${active.id}`}
+          className="rounded border border-neutral-900 bg-neutral-900 px-4 py-3 text-center text-white"
+        >
+          Resume workout in progress
         </Link>
-      ) : null}
+      ) : (
+        <form action={startWorkout} className="flex flex-col gap-2">
+          <label className="flex flex-col gap-1 text-sm">
+            Focus
+            <input
+              name="focus"
+              placeholder="push / pull / legs / full-body"
+              className="rounded border border-neutral-300 px-3 py-2 text-base"
+            />
+          </label>
+          <button className="rounded bg-neutral-900 px-4 py-3 text-white">Start workout</button>
+        </form>
+      )}
+
+      <nav className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <Link href="/calendar" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          Week
+        </Link>
+        <Link href="/routines" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          Routines
+        </Link>
+        <Link href="/history" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          History
+        </Link>
+        <Link href="/settings" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          Settings
+        </Link>
+      </nav>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-lg font-medium">Today &amp; tomorrow</h2>
-        {todays.length === 0 ? (
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-lg font-medium">Recent workouts</h2>
+          {history.length === RECENT_LIMIT ? (
+            <Link href="/history" className="text-sm text-neutral-500 underline">
+              All
+            </Link>
+          ) : null}
+        </div>
+        {history.length === 0 ? (
           <p className="text-sm text-neutral-500">
-            Nothing planned. <Link href={`/sessions/new?date=${today}`} className="underline">Plan a session</Link> or start a workout below.
+            No completed workouts yet. Your first one will show up here.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {todays.map((s) => {
-              const startable =
-                s.type === "lift" && s.status === "planned" && !s.lift_details?.started_at && s.planned_date === today;
-              return (
-                <li key={s.id} className="flex items-center justify-between gap-3 rounded border border-neutral-200 px-4 py-3">
-                  <Link href={`/sessions/${s.id}`} className="min-w-0 flex-1">
-                    <p className="font-medium">
-                      {sessionLabel(s)}
-                      {s.status === "completed" ? " ✓" : s.status === "skipped" ? " (skipped)" : ""}
-                    </p>
-                    <p className="text-xs text-neutral-500">
-                      {s.planned_date === today ? "Today" : "Tomorrow"}
-                      {s.planned_time ? ` · ${s.planned_time.slice(0, 5)}` : ""}
-                      {(s.type === "run" ? runActualSummary(s) : null) ?? plannedSummary(s)
-                        ? ` · ${(s.type === "run" ? runActualSummary(s) : null) ?? plannedSummary(s)}`
-                        : ""}
-                    </p>
-                  </Link>
-                  {startable ? (
-                    <form action={startPlannedWorkout}>
-                      <input type="hidden" name="sessionId" value={s.id} />
-                      <button className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white">Start</button>
-                    </form>
-                  ) : null}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-lg font-medium">Lift now</h2>
-        {active ? (
-          <Link href={`/workout/${active.id}`} className="rounded bg-neutral-900 px-4 py-3 text-center text-white">
-            Resume workout in progress
-          </Link>
-        ) : (
-          <form action={startWorkout} className="flex flex-col gap-2">
-            <div className="flex flex-wrap gap-2">
-              <input
-                name="focus"
-                placeholder="Focus: push / pull / legs…"
-                className="min-w-40 flex-1 rounded border border-neutral-300 px-3 py-2 text-base"
-              />
-              {routines.length ? (
-                <select name="routineId" defaultValue="" className="rounded border border-neutral-300 px-2 py-2 text-base">
-                  <option value="">Blank workout</option>
-                  {routines.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-            </div>
-            <button className="rounded bg-neutral-900 px-4 py-3 text-white">Start ad-hoc workout</button>
-          </form>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex items-baseline justify-between">
-          <h2 className="text-lg font-medium">Recent</h2>
-          <Link href="/history" className="text-sm text-neutral-500 underline">
-            All history
-          </Link>
-        </div>
-        {completed.length === 0 ? (
-          <p className="text-sm text-neutral-500">No completed sessions in the last two weeks.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {completed.map((s) => (
-              <li key={s.id}>
+            {history.map((w) => (
+              <li key={w.sessionId}>
                 <Link
-                  href={s.type === "lift" ? `/workout/${s.id}/summary` : `/sessions/${s.id}`}
-                  className="flex items-baseline justify-between rounded border border-neutral-200 px-4 py-3"
+                  href={`/workout/${w.sessionId}/summary`}
+                  className="flex items-baseline justify-between gap-2 rounded border border-neutral-200 px-4 py-3"
                 >
-                  <span className="font-medium">{sessionLabel(s)}</span>
-                  <span className="text-sm text-neutral-500">{formatDate(s.planned_date)}</span>
+                  <span className="font-medium capitalize">{w.focus}</span>
+                  <span className="text-sm tabular-nums text-neutral-500">
+                    {w.date} · {formatDuration(w.startedAt, w.completedAt)} ·{" "}
+                    {totalVolume(w.exercises.flatMap((e) => e.sets)).toLocaleString()} lb
+                  </span>
                 </Link>
               </li>
             ))}

@@ -1,29 +1,44 @@
 import Link from "next/link";
 import { getFilterOptions, searchExercises } from "@/lib/lift/queries";
 import { UNSPECIFIED_EQUIPMENT } from "@/lib/lift/types";
-import { createCustomExercise } from "@/app/workout/actions";
 
-// Exercise search + filter + "create custom", shared by the workout and
-// routine editors. `hidden` fields travel with both the add and create forms
-// so the action knows where the exercise is going.
-export async function ExercisePicker({
-  title,
-  backHref,
-  hidden,
-  addAction,
-  query,
-}: {
+type Props = {
   title: string;
   backHref: string;
+  /** Current filter state, read from the page's search params. */
+  query: string;
+  muscle: string;
+  equipment: string;
+  /** Server action run when an exercise is picked, and when a custom one is created. */
+  pickAction: (formData: FormData) => Promise<void>;
+  createAction: (formData: FormData) => Promise<void>;
+  /** Extra hidden inputs both forms need — the session or routine being added to. */
   hidden: Record<string, string>;
-  addAction: (formData: FormData) => Promise<void>;
-  query: { q?: string; muscle?: string; equipment?: string };
-}) {
-  const { q = "", muscle = "", equipment = "" } = query;
+};
+
+/**
+ * The exercise picker (spec Screens #2), shared by the workout logger and the
+ * routine editor. Both need the same search, the same filters and the same
+ * "create custom" escape hatch; only the action they submit to differs.
+ *
+ * A server component on purpose: filters live in the URL as a plain GET form,
+ * so search works without JavaScript and every result is rendered server-side.
+ */
+export default async function ExercisePicker({
+  title,
+  backHref,
+  query,
+  muscle,
+  equipment,
+  pickAction,
+  createAction,
+  hidden,
+}: Props) {
   const [results, options] = await Promise.all([
-    searchExercises(q, muscle || undefined, equipment || undefined),
+    searchExercises(query, muscle || undefined, equipment || undefined),
     getFilterOptions(),
   ]);
+
   const hiddenInputs = Object.entries(hidden).map(([name, value]) => (
     <input key={name} type="hidden" name={name} value={value} />
   ));
@@ -37,16 +52,18 @@ export async function ExercisePicker({
         </Link>
       </header>
 
-      {/* GET form so filters live in the URL and the page stays a server component. */}
       <form className="flex flex-wrap gap-2">
         <input
           name="q"
-          defaultValue={q}
+          defaultValue={query}
           placeholder="Search exercises"
-          autoFocus
           className="min-w-40 flex-1 rounded border border-neutral-300 px-3 py-2 text-base"
         />
-        <select name="muscle" defaultValue={muscle} className="rounded border border-neutral-300 px-2 py-2 text-base">
+        <select
+          name="muscle"
+          defaultValue={muscle}
+          className="rounded border border-neutral-300 px-2 py-2 text-base"
+        >
           <option value="">All muscles</option>
           {options.muscles.map((m) => (
             <option key={m} value={m}>
@@ -54,7 +71,11 @@ export async function ExercisePicker({
             </option>
           ))}
         </select>
-        <select name="equipment" defaultValue={equipment} className="rounded border border-neutral-300 px-2 py-2 text-base">
+        <select
+          name="equipment"
+          defaultValue={equipment}
+          className="rounded border border-neutral-300 px-2 py-2 text-base"
+        >
           <option value="">All equipment</option>
           {options.equipment.map((e) => (
             <option key={e} value={e}>
@@ -63,7 +84,9 @@ export async function ExercisePicker({
           ))}
           {/* 77 seeded rows have no equipment; this keeps them reachable
               rather than invisible behind every equipment filter. */}
-          {options.hasUnspecifiedEquipment ? <option value="__unspecified__">{UNSPECIFIED_EQUIPMENT}</option> : null}
+          {options.hasUnspecifiedEquipment ? (
+            <option value="__unspecified__">{UNSPECIFIED_EQUIPMENT}</option>
+          ) : null}
         </select>
         <button className="rounded border border-neutral-900 px-4 py-2">Search</button>
       </form>
@@ -71,7 +94,7 @@ export async function ExercisePicker({
       <ul className="flex flex-col divide-y divide-neutral-100">
         {results.map((ex) => (
           <li key={ex.id}>
-            <form action={addAction} className="flex items-center justify-between gap-3 py-2.5">
+            <form action={pickAction} className="flex items-center justify-between gap-3 py-2.5">
               {hiddenInputs}
               <input type="hidden" name="exerciseId" value={ex.id} />
               <div className="min-w-0">
@@ -81,7 +104,9 @@ export async function ExercisePicker({
                   {ex.is_custom ? " · custom" : ""}
                 </p>
               </div>
-              <button className="shrink-0 rounded border border-neutral-300 px-3 py-1.5 text-sm">Add</button>
+              <button className="shrink-0 rounded border border-neutral-300 px-3 py-1.5 text-sm">
+                Add
+              </button>
             </form>
           </li>
         ))}
@@ -89,18 +114,18 @@ export async function ExercisePicker({
 
       {results.length === 0 ? (
         <p className="text-sm text-neutral-500">
-          Nothing matched{q ? ` “${q}”` : ""}. Create it as a custom exercise below.
+          Nothing matched{query ? ` “${query}”` : ""}. Create it as a custom exercise below.
         </p>
       ) : null}
 
-      <details className="rounded border border-neutral-200 p-4" open={results.length === 0}>
+      <details className="rounded border border-neutral-200 p-4">
         <summary className="cursor-pointer text-sm font-medium">Create custom exercise</summary>
-        <form action={createCustomExercise} className="mt-3 flex flex-col gap-2">
+        <form action={createAction} className="mt-3 flex flex-col gap-2">
           {hiddenInputs}
           <input
             name="name"
             required
-            defaultValue={q}
+            defaultValue={query}
             placeholder="Exercise name"
             className="rounded border border-neutral-300 px-3 py-2 text-base"
           />
@@ -109,14 +134,6 @@ export async function ExercisePicker({
             {options.muscles.map((m) => (
               <option key={m} value={m}>
                 {m}
-              </option>
-            ))}
-          </select>
-          <select name="equipment" className="rounded border border-neutral-300 px-2 py-2 text-base">
-            <option value="">Equipment (optional)</option>
-            {options.equipment.map((e) => (
-              <option key={e} value={e}>
-                {e}
               </option>
             ))}
           </select>

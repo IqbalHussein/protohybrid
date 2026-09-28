@@ -1,30 +1,27 @@
-import { cache } from "react";
-import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { fetchAll } from "@/lib/plans";
-import { countsAsWork, estimated1RM, setVolume } from "./math";
-import type { Exercise, LiftSet, PrRecordType, SetType } from "./types";
+import { requireUser, type UserClient } from "@/lib/auth";
+import type { HistorySet } from "./stats";
+import type { Exercise, LiftSet, Routine, RoutineExercise } from "./types";
 
-// Middleware already bounces signed-out requests to /login; this covers a
-// session that expires mid-request. Cached so a page and the helpers it calls
-// share one auth round-trip.
-export const getCurrentUser = cache(async () => {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  return { supabase, user };
-});
+// Every query here runs as the signed-in user with RLS enforced, so none of
+// them filter by user_id explicitly — the policies in 0001/0002/0005 do it.
 
-export const requireUser = cache(async () => {
-  const { supabase, user } = await getCurrentUser();
-  if (!user) redirect("/login");
-  return { supabase, user };
-});
+/** Columns of lift_sets that make up a LiftSet, as one PostgREST select list. */
+const SET_COLUMNS =
+  "id, lift_details_id, exercise_id, set_number, reps, weight, rpe, set_type, superset_group, created_at";
+
+const EXERCISE_COLUMNS = "id, name, muscle_group, equipment, is_custom";
+
+/** PostgREST types a to-one embed as an array; collapse it. */
+function one<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+}
 
 export type WorkoutExercise = {
   exercise: Exercise;
   sets: LiftSet[];
+  /** Shared by every exercise in the same superset; null when logged alone. */
+  supersetGroup: string | null;
 };
 
 export type Workout = {
@@ -32,7 +29,6 @@ export type Workout = {
   status: string;
   plannedDate: string;
   routineId: string | null;
-  adHoc: boolean;
   focus: string;
   notes: string | null;
   startedAt: string | null;
@@ -45,33 +41,32 @@ export async function getWorkout(sessionId: string): Promise<Workout | null> {
 
   const { data: session } = await supabase
     .from("sessions")
-    .select("id, status, planned_date, routine_id, ad_hoc, lift_details(focus, notes, started_at, completed_at)")
+    .select("id, status, planned_date, routine_id, lift_details(focus, notes, started_at, completed_at)")
     .eq("id", sessionId)
     .maybeSingle();
 
   if (!session) return null;
-  const details = Array.isArray(session.lift_details)
-    ? session.lift_details[0]
-    : session.lift_details;
+  const details = one(session.lift_details);
   if (!details) return null;
 
   const { data: sets } = await supabase
     .from("lift_sets")
-    .select(
-      "id, lift_details_id, exercise_id, set_number, reps, weight, rpe, set_type, superset_group, created_at, exercises(id, name, muscle_group, equipment, is_custom)",
-    )
+    .select(`${SET_COLUMNS}, exercises(${EXERCISE_COLUMNS})`)
     .eq("lift_details_id", sessionId)
     .order("created_at", { ascending: true });
 
-  // Group sets by exercise, ordered by when each exercise was first logged.
+  // Group sets by exercise, ordered by when each exercise was first logged —
+  // which is why 0004 added lift_sets.created_at.
   const byExercise = new Map<string, WorkoutExercise>();
   for (const row of sets ?? []) {
-    const ex = (Array.isArray(row.exercises) ? row.exercises[0] : row.exercises) as Exercise;
-    if (!ex) continue;
-    if (!byExercise.has(ex.id)) byExercise.set(ex.id, { exercise: ex, sets: [] });
+    const exercise = one(row.exercises) as Exercise | null;
+    if (!exercise) continue;
+    if (!byExercise.has(exercise.id)) {
+      byExercise.set(exercise.id, { exercise, sets: [], supersetGroup: row.superset_group });
+    }
     const set = { ...row } as Record<string, unknown>;
     delete set.exercises;
-    byExercise.get(ex.id)!.sets.push(set as unknown as LiftSet);
+    byExercise.get(exercise.id)!.sets.push(set as unknown as LiftSet);
   }
 
   return {
@@ -79,13 +74,22 @@ export async function getWorkout(sessionId: string): Promise<Workout | null> {
     status: session.status,
     plannedDate: session.planned_date,
     routineId: session.routine_id,
-    adHoc: session.ad_hoc,
     focus: details.focus,
     notes: details.notes,
     startedAt: details.started_at,
     completedAt: details.completed_at,
     exercises: [...byExercise.values()],
   };
+}
+
+export async function getExercise(exerciseId: string): Promise<Exercise | null> {
+  const { supabase } = await requireUser();
+  const { data } = await supabase
+    .from("exercises")
+    .select(EXERCISE_COLUMNS)
+    .eq("id", exerciseId)
+    .maybeSingle();
+  return (data as Exercise | null) ?? null;
 }
 
 // Previous performance for the ghost text on each new set row: the sets from
@@ -98,7 +102,7 @@ export async function getPreviousPerformance(
 
   const { data } = await supabase
     .from("lift_sets")
-    .select("id, lift_details_id, exercise_id, set_number, reps, weight, rpe, set_type, superset_group, created_at")
+    .select(SET_COLUMNS)
     .eq("exercise_id", exerciseId)
     .neq("lift_details_id", excludeSessionId)
     .order("created_at", { ascending: false })
@@ -113,6 +117,23 @@ export async function getPreviousPerformance(
     .sort((a, b) => a.set_number - b.set_number);
 }
 
+/**
+ * Per-exercise rest lengths. Only overrides are stored, so exercises without a
+ * row are simply absent from the map and the caller falls back to
+ * DEFAULT_REST_SECONDS.
+ */
+export async function getRestPreferences(exerciseIds: string[]): Promise<Map<string, number>> {
+  if (!exerciseIds.length) return new Map();
+  const { supabase } = await requireUser();
+
+  const { data } = await supabase
+    .from("exercise_rest_prefs")
+    .select("exercise_id, rest_seconds")
+    .in("exercise_id", exerciseIds);
+
+  return new Map((data ?? []).map((r) => [r.exercise_id as string, r.rest_seconds as number]));
+}
+
 export async function searchExercises(
   query: string,
   muscleGroup?: string,
@@ -120,9 +141,7 @@ export async function searchExercises(
 ): Promise<Exercise[]> {
   const { supabase } = await requireUser();
 
-  let q = supabase
-    .from("exercises")
-    .select("id, name, muscle_group, equipment, is_custom");
+  let q = supabase.from("exercises").select(EXERCISE_COLUMNS);
 
   // Dataset names are verbose ("Barbell Bench Press - Medium Grip"), so match
   // every whitespace-separated term anywhere in the name rather than requiring
@@ -158,6 +177,70 @@ export async function getFilterOptions() {
   };
 }
 
+export type HistoryWorkout = {
+  sessionId: string;
+  date: string;
+  routineId: string | null;
+  focus: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  exercises: { name: string; sets: LiftSet[] }[];
+};
+
+/**
+ * Completed workouts, newest first, each carrying its sets so the history list
+ * can expand in place (spec flow #6) without a request per row.
+ *
+ * Two queries rather than one nested select: sets are fetched by session id,
+ * which keeps the payload flat and the ordering explicit.
+ */
+export async function getWorkoutHistory(limit = 25): Promise<HistoryWorkout[]> {
+  const { supabase } = await requireUser();
+
+  const { data: sessions } = await supabase
+    .from("sessions")
+    .select("id, planned_date, routine_id, lift_details!inner(focus, started_at, completed_at)")
+    .eq("type", "lift")
+    .eq("status", "completed")
+    .order("planned_date", { ascending: false })
+    .limit(limit);
+
+  if (!sessions?.length) return [];
+  const ids = sessions.map((s) => s.id as string);
+
+  const { data: sets } = await supabase
+    .from("lift_sets")
+    .select(`${SET_COLUMNS}, exercises(id, name)`)
+    .in("lift_details_id", ids)
+    .order("created_at", { ascending: true });
+
+  // session id -> exercise name -> sets, preserving first-logged order.
+  const bySession = new Map<string, Map<string, { name: string; sets: LiftSet[] }>>();
+  for (const row of sets ?? []) {
+    const exercise = one(row.exercises) as { id: string; name: string } | null;
+    if (!exercise) continue;
+    const group = bySession.get(row.lift_details_id) ?? new Map();
+    bySession.set(row.lift_details_id, group);
+    if (!group.has(exercise.id)) group.set(exercise.id, { name: exercise.name, sets: [] });
+    const set = { ...row } as Record<string, unknown>;
+    delete set.exercises;
+    group.get(exercise.id)!.sets.push(set as unknown as LiftSet);
+  }
+
+  return sessions.map((s) => {
+    const details = one(s.lift_details);
+    return {
+      sessionId: s.id,
+      date: s.planned_date,
+      routineId: s.routine_id,
+      focus: details?.focus ?? "Workout",
+      startedAt: details?.started_at ?? null,
+      completedAt: details?.completed_at ?? null,
+      exercises: [...(bySession.get(s.id)?.values() ?? [])],
+    };
+  });
+}
+
 export async function getActiveWorkout() {
   const { supabase } = await requireUser();
   const { data } = await supabase
@@ -173,244 +256,144 @@ export async function getActiveWorkout() {
   return data;
 }
 
-export type RoutineExercise = {
-  id: string;
-  position: number;
-  target_sets: number | null;
-  target_reps: number | null;
-  exercise: Exercise;
+/** Which completed sets to load; every field narrows the result further. */
+export type SetScope = {
+  exerciseIds?: string[];
+  routineId?: string;
+  excludeSessionId?: string;
+  /** Only sessions dated on or before this YYYY-MM-DD. */
+  onOrBefore?: string;
 };
 
-export type Routine = { id: string; name: string; exercises: RoutineExercise[] };
+/**
+ * Completed sets, dated by their session — the input to charts, history and
+ * PR detection.
+ *
+ * lift_sets knows only its lift_details_id, so the session's status and date
+ * come through the lift_details -> sessions embed, filtered server-side:
+ * an in-progress or skipped workout never counts. Paged, because PostgREST
+ * caps a response at its max-rows (1000 on Supabase) without saying so, and a
+ * truncated history would silently drop old data from charts and let PR
+ * detection miss the real best.
+ */
+export async function getCompletedSets(supabase: UserClient, scope: SetScope): Promise<HistorySet[]> {
+  const rows: Record<string, unknown>[] = [];
 
-export async function getRoutine(routineId: string): Promise<Routine | null> {
-  const { supabase } = await requireUser();
-  const { data } = await supabase
-    .from("routines")
-    .select(
-      "id, name, routine_exercises(id, position, target_sets, target_reps, exercises(id, name, muscle_group, equipment, is_custom))",
-    )
-    .eq("id", routineId)
-    .maybeSingle();
-  if (!data) return null;
-
-  const exercises = (data.routine_exercises ?? [])
-    .map((re) => ({
-      id: re.id,
-      position: re.position,
-      target_sets: re.target_sets,
-      target_reps: re.target_reps,
-      exercise: (Array.isArray(re.exercises) ? re.exercises[0] : re.exercises) as Exercise,
-    }))
-    .filter((re) => re.exercise)
-    .sort((a, b) => a.position - b.position);
-
-  return { id: data.id, name: data.name, exercises };
-}
-
-export async function getRoutines() {
-  const { supabase } = await requireUser();
-  const { data } = await supabase
-    .from("routines")
-    .select("id, name, routine_exercises(count)")
-    .order("name");
-  return (data ?? []).map((r) => ({
-    id: r.id as string,
-    name: r.name as string,
-    exerciseCount: (r.routine_exercises as unknown as { count: number }[])?.[0]?.count ?? 0,
-  }));
-}
-
-// Rest timer length per exercise, falling back to the user's default.
-export async function getRestSeconds(exerciseIds: string[]): Promise<Record<string, number>> {
-  if (!exerciseIds.length) return {};
-  const { supabase } = await requireUser();
-  const { data } = await supabase
-    .from("exercise_preferences")
-    .select("exercise_id, rest_seconds")
-    .in("exercise_id", exerciseIds);
-  return Object.fromEntries((data ?? []).map((r) => [r.exercise_id, r.rest_seconds]));
-}
-
-export async function getExercise(exerciseId: string): Promise<(Exercise & { user_id: string | null }) | null> {
-  const { supabase } = await requireUser();
-  const { data } = await supabase
-    .from("exercises")
-    .select("id, name, muscle_group, equipment, is_custom, user_id")
-    .eq("id", exerciseId)
-    .maybeSingle();
-  return data;
-}
-
-export type SessionPoint = {
-  sessionId: string;
-  date: string;
-  sets: LiftSet[];
-  heaviest: number;
-  bestE1rm: number;
-  volume: number;
-};
-
-type SessionRow = {
-  id: string;
-  planned_date: string;
-  lift_details: { completed_at: string | null } | { completed_at: string | null }[] | null;
-};
-
-// Completed lift sessions keyed by id, with a sortable completion timestamp.
-async function completedLiftSessions(sessionIds?: string[]) {
-  const { supabase } = await requireUser();
-  const rows = await fetchAll<SessionRow>((from, to) => {
-    let q = supabase
-      .from("sessions")
-      .select("id, planned_date, lift_details(completed_at)")
-      .eq("type", "lift")
-      .eq("status", "completed");
-    if (sessionIds) q = q.in("id", sessionIds);
-    return q.order("id").range(from, to);
-  });
-  return new Map(
-    rows.map((s) => {
-      const d = Array.isArray(s.lift_details) ? s.lift_details[0] : s.lift_details;
-      return [s.id, { date: s.planned_date, at: d?.completed_at ?? `${s.planned_date}T12:00:00Z` }];
-    }),
-  );
-}
-
-function summarize(sessionId: string, date: string, sets: LiftSet[]): SessionPoint {
-  const work = sets.filter((s) => countsAsWork(s.set_type));
-  return {
-    sessionId,
-    date,
-    sets: [...sets].sort((a, b) => a.set_number - b.set_number),
-    heaviest: work.reduce((m, s) => Math.max(m, s.weight ?? 0), 0),
-    bestE1rm: work.reduce((m, s) => Math.max(m, estimated1RM(s.weight, s.reps)), 0),
-    volume: work.reduce((sum, s) => sum + setVolume(s.weight, s.reps), 0),
-  };
-}
-
-// Every completed session that included this exercise, oldest first.
-export async function getExerciseHistory(exerciseId: string): Promise<SessionPoint[]> {
-  const { supabase } = await requireUser();
-  const sets = await fetchAll<LiftSet>((from, to) =>
-    supabase
+  // Advance by what actually came back rather than a fixed page size, so a
+  // project configured with a lower max-rows still reads everything.
+  for (let from = 0; ; ) {
+    let query = supabase
       .from("lift_sets")
-      .select("id, lift_details_id, exercise_id, set_number, reps, weight, rpe, set_type, superset_group, created_at")
-      .eq("exercise_id", exerciseId)
-      .order("id")
-      .range(from, to),
-  );
-  const sessionIds = [...new Set(sets.map((s) => s.lift_details_id))];
-  if (!sessionIds.length) return [];
-  const sessions = await completedLiftSessions(sessionIds);
+      .select(
+        "id, lift_details_id, exercise_id, weight, reps, set_type, lift_details!inner(sessions!inner(planned_date))",
+      )
+      .eq("lift_details.sessions.status", "completed");
+    if (scope.exerciseIds) query = query.in("exercise_id", scope.exerciseIds);
+    if (scope.routineId) query = query.eq("lift_details.sessions.routine_id", scope.routineId);
+    if (scope.excludeSessionId) query = query.neq("lift_details_id", scope.excludeSessionId);
+    if (scope.onOrBefore) query = query.lte("lift_details.sessions.planned_date", scope.onOrBefore);
 
-  const grouped = new Map<string, LiftSet[]>();
-  for (const s of sets) {
-    if (!sessions.has(s.lift_details_id)) continue;
-    grouped.set(s.lift_details_id, [...(grouped.get(s.lift_details_id) ?? []), s]);
+    const { data, error } = await query.order("id").range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`Could not load sets: ${error.message}`);
+    if (!data?.length) break;
+    rows.push(...(data as Record<string, unknown>[]));
+    from += data.length;
   }
-  return [...grouped.entries()]
-    .sort(([a], [b]) => sessions.get(a)!.at.localeCompare(sessions.get(b)!.at))
-    .map(([id, ss]) => summarize(id, sessions.get(id)!.date, ss));
+
+  return rows.flatMap((r) => {
+    const session = one(one(r.lift_details as { sessions: unknown } | null)?.sessions as
+      | { planned_date: string }
+      | { planned_date: string }[]
+      | null);
+    if (!session) return [];
+    return [
+      {
+        lift_details_id: r.lift_details_id as string,
+        exercise_id: r.exercise_id as string,
+        weight: r.weight as number | null,
+        reps: r.reps as number | null,
+        set_type: r.set_type as HistorySet["set_type"],
+        session_date: session.planned_date,
+      },
+    ];
+  });
 }
 
-export async function getCurrentRecords(exerciseId: string) {
+const PAGE_SIZE = 1000;
+
+/** Every completed set of one exercise, dated — the input to its progress charts. */
+export async function getExerciseHistory(exerciseId: string): Promise<HistorySet[]> {
+  const { supabase } = await requireUser();
+  return getCompletedSets(supabase, { exerciseIds: [exerciseId] });
+}
+
+export async function getExercisePrs(exerciseId: string) {
   const { supabase } = await requireUser();
   const { data } = await supabase
     .from("personal_records")
-    .select("record_type, value, weight, reps, session_id, achieved_at")
+    .select("id, record_type, value, weight, reps, achieved_at, session_id")
     .eq("exercise_id", exerciseId)
     .order("achieved_at", { ascending: false });
-  // Records are appended as they're beaten, so the newest per type is current.
-  const current = new Map<PrRecordType, NonNullable<typeof data>[number]>();
-  for (const r of data ?? []) {
-    if (!current.has(r.record_type)) current.set(r.record_type, r);
-  }
-  return current;
+  return data ?? [];
 }
 
-// Total working volume of every completed session started from a routine.
-export async function getRoutineProgress(routineId: string) {
+export async function getRoutines(): Promise<(Routine & { exerciseCount: number })[]> {
   const { supabase } = await requireUser();
-  const { data: sessions } = await supabase
-    .from("sessions")
-    .select("id, planned_date, lift_details(completed_at)")
+  const { data } = await supabase
+    .from("routines")
+    .select("id, name, created_at, routine_exercises(id)")
+    .order("name");
+
+  return (data ?? []).map((r) => ({
+    id: r.id,
+    name: r.name,
+    created_at: r.created_at,
+    exerciseCount: Array.isArray(r.routine_exercises) ? r.routine_exercises.length : 0,
+  }));
+}
+
+export async function getRoutine(
+  routineId: string,
+): Promise<{ routine: Routine; exercises: RoutineExercise[] } | null> {
+  const { supabase } = await requireUser();
+
+  const { data: routine } = await supabase
+    .from("routines")
+    .select("id, name, created_at")
+    .eq("id", routineId)
+    .maybeSingle();
+  if (!routine) return null;
+
+  const { data: rows } = await supabase
+    .from("routine_exercises")
+    .select(`id, routine_id, exercise_id, target_sets, target_reps, position, exercises(${EXERCISE_COLUMNS})`)
     .eq("routine_id", routineId)
-    .eq("status", "completed")
-    .order("planned_date");
-  const ids = (sessions ?? []).map((s) => s.id);
-  if (!ids.length) return [];
+    .order("position");
 
-  const sets = await fetchAll<{ lift_details_id: string; weight: number | null; reps: number | null; set_type: SetType }>(
-    (from, to) =>
-      supabase
-        .from("lift_sets")
-        .select("lift_details_id, weight, reps, set_type")
-        .in("lift_details_id", ids)
-        .order("id")
-        .range(from, to),
-  );
-  const volume = new Map<string, number>();
-  for (const s of sets) {
-    if (!countsAsWork(s.set_type)) continue;
-    volume.set(s.lift_details_id, (volume.get(s.lift_details_id) ?? 0) + setVolume(s.weight, s.reps));
-  }
-  return (sessions ?? []).map((s) => ({ sessionId: s.id, date: s.planned_date, volume: volume.get(s.id) ?? 0 }));
-}
-
-// Exercises the user has actually logged, most recently used first.
-export async function getLoggedExercises() {
-  const { supabase } = await requireUser();
-  const sets = await fetchAll<{
-    exercise_id: string;
-    created_at: string;
-    exercises: Exercise | Exercise[] | null;
-  }>((from, to) =>
-    supabase
-      .from("lift_sets")
-      .select("exercise_id, created_at, exercises(id, name, muscle_group, equipment, is_custom)")
-      .order("id")
-      .range(from, to),
-  );
-  const byId = new Map<string, { exercise: Exercise; lastUsed: string; sets: number }>();
-  for (const s of sets) {
-    const ex = Array.isArray(s.exercises) ? s.exercises[0] : s.exercises;
-    if (!ex) continue;
-    const prev = byId.get(ex.id);
-    byId.set(ex.id, {
-      exercise: ex,
-      lastUsed: !prev || s.created_at > prev.lastUsed ? s.created_at : prev.lastUsed,
-      sets: (prev?.sets ?? 0) + 1,
+  const exercises: RoutineExercise[] = [];
+  for (const row of rows ?? []) {
+    const exercise = one(row.exercises) as Exercise | null;
+    if (!exercise) continue;
+    exercises.push({
+      id: row.id,
+      routine_id: row.routine_id,
+      exercise_id: row.exercise_id,
+      target_sets: row.target_sets,
+      target_reps: row.target_reps,
+      position: row.position,
+      exercise,
     });
   }
-  return [...byId.values()].sort((a, b) => b.lastUsed.localeCompare(a.lastUsed));
+
+  return { routine: routine as Routine, exercises };
 }
 
-// Sets for a batch of sessions, grouped per session then per exercise in the
-// order they were logged. Used by the history list.
-export async function getSetsForSessions(sessionIds: string[]) {
-  if (!sessionIds.length) return new Map<string, WorkoutExercise[]>();
+/**
+ * Every completed set logged in a session started from this routine (spec
+ * Screens #6). sessions.routine_id — added in 0002 — is what makes this
+ * groupable; without it a routine's history would be unrecoverable.
+ */
+export async function getRoutineHistory(routineId: string): Promise<HistorySet[]> {
   const { supabase } = await requireUser();
-  const rows = await fetchAll<LiftSet & { exercises: Exercise | Exercise[] | null }>((from, to) =>
-    supabase
-      .from("lift_sets")
-      .select(
-        "id, lift_details_id, exercise_id, set_number, reps, weight, rpe, set_type, superset_group, created_at, exercises(id, name, muscle_group, equipment, is_custom)",
-      )
-      .in("lift_details_id", sessionIds)
-      .order("created_at")
-      .order("id")
-      .range(from, to),
-  );
-  const out = new Map<string, WorkoutExercise[]>();
-  for (const { exercises, ...set } of rows) {
-    const ex = Array.isArray(exercises) ? exercises[0] : exercises;
-    if (!ex) continue;
-    const list = out.get(set.lift_details_id) ?? [];
-    let entry = list.find((e) => e.exercise.id === ex.id);
-    if (!entry) list.push((entry = { exercise: ex, sets: [] }));
-    entry.sets.push(set);
-    out.set(set.lift_details_id, list);
-  }
-  return out;
+  return getCompletedSets(supabase, { routineId });
 }

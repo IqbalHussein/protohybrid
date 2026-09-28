@@ -1,49 +1,54 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { mondayOf, type DateString } from "@/lib/dates";
+import type { UserClient } from "./auth";
+import { mondayOf } from "./week";
 
-// sessions.plan_id is NOT NULL and plans is unique on (user_id,
-// week_start_date), so creating or moving a session means resolving the plan
-// for that date's week first.
-export async function findOrCreatePlan(
-  supabase: SupabaseClient,
+/**
+ * `sessions.plan_id` is NOT NULL and `plans` is unique on
+ * (user_id, week_start_date), so every session has to resolve to exactly one
+ * week's plan before it can be written — and a session that moves across a
+ * week boundary has to be reparented, or its date falls outside its own plan's
+ * week and quietly corrupts every query that reaches sessions through plan_id.
+ *
+ * Both rules live here so the logger and the calendar cannot drift apart.
+ */
+
+/** The plan for a date's week, or null. Never writes — browsing empty weeks must leave no trace. */
+export async function findPlanForDate(
+  supabase: UserClient,
   userId: string,
-  date: DateString,
-): Promise<string> {
-  const weekStart = mondayOf(date);
-
-  const { data: existing } = await supabase
+  date: string,
+): Promise<string | null> {
+  const { data } = await supabase
     .from("plans")
     .select("id")
     .eq("user_id", userId)
-    .eq("week_start_date", weekStart)
+    .eq("week_start_date", mondayOf(date))
     .maybeSingle();
 
-  if (existing) return existing.id;
+  return (data?.id as string | undefined) ?? null;
+}
+
+/** The plan for a date's week, creating it if this is the week's first write. */
+export async function findOrCreatePlanForDate(
+  supabase: UserClient,
+  userId: string,
+  date: string,
+): Promise<string> {
+  const existing = await findPlanForDate(supabase, userId, date);
+  if (existing) return existing;
 
   const { data, error } = await supabase
     .from("plans")
-    .upsert(
-      { user_id: userId, week_start_date: weekStart },
-      { onConflict: "user_id,week_start_date" },
-    )
+    .insert({ user_id: userId, week_start_date: mondayOf(date) })
     .select("id")
     .single();
 
-  if (error) throw new Error(`Could not create plan: ${error.message}`);
-  return data.id;
-}
-
-// PostgREST caps responses (1000 rows by default on Supabase), which a full
-// set history for one exercise can exceed. Pages through until exhausted.
-export async function fetchAll<T>(
-  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
-  pageSize = 1000,
-): Promise<T[]> {
-  const rows: T[] = [];
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await page(from, from + pageSize - 1);
-    if (error) throw new Error(error.message);
-    rows.push(...(data ?? []));
-    if (!data || data.length < pageSize) return rows;
+  // Two concurrent writes into a fresh week race on the unique constraint;
+  // 23505 means the other one won, and its plan is the one we wanted.
+  if (error?.code === "23505") {
+    const raced = await findPlanForDate(supabase, userId, date);
+    if (raced) return raced;
   }
+  if (error) throw new Error(`Could not create plan: ${error.message}`);
+
+  return data.id as string;
 }

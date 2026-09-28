@@ -2,55 +2,29 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireUser } from "@/lib/lift/queries";
-import { rebuildPrs } from "@/lib/lift/prs";
-import { appendRoutineExercise } from "@/lib/lift/routines";
-import { findOrCreatePlan } from "@/lib/plans";
-import { getSettings } from "@/lib/settings";
-import { todayIn } from "@/lib/dates";
-import { numberField, textField } from "@/lib/format";
-import type { SetType } from "@/lib/lift/types";
+import { requireUser } from "@/lib/auth";
+import { optionalNumber, requiredString } from "@/lib/forms";
+import { findOrCreatePlanForDate } from "@/lib/plans";
+import { todayInZone } from "@/lib/time";
+import { getCompletedSets, getWorkout, getRestPreferences } from "@/lib/lift/queries";
+import { findPrs, type PrCandidate, type PrSet } from "@/lib/lift/prs";
+import { routineTargetsFromSets } from "@/lib/lift/routines";
+import { shouldStartRest, type GroupedExercise } from "@/lib/lift/supersets";
+import { DEFAULT_REST_SECONDS, type SetType } from "@/lib/lift/types";
 
-const SET_TYPES: SetType[] = ["warmup", "working", "drop", "failure"];
-
-function parseSetType(formData: FormData): SetType {
-  const raw = String(formData.get("setType") || "working");
-  return SET_TYPES.includes(raw as SetType) ? (raw as SetType) : "working";
-}
-
-async function sessionStatus(sessionId: string) {
-  const { supabase } = await requireUser();
-  const { data } = await supabase.from("sessions").select("status").eq("id", sessionId).maybeSingle();
-  return data?.status as string | undefined;
-}
-
-// Sets on a finished workout can be corrected after the fact; when they are,
-// PRs for the affected exercise are replayed so history stays consistent.
-async function afterSetChange(sessionId: string, exerciseIds: string[]) {
+/**
+ * Create today's session plus its lift_details and open the logging screen.
+ * Shared by the ad-hoc "Start workout" button and by starting from a routine,
+ * which differ only in the focus text and whether routine_id is set.
+ *
+ * An ad-hoc workout can't just insert a session: sessions.plan_id is NOT NULL,
+ * so it resolves today's plan first and therefore still shows up on the
+ * calendar rather than existing off to one side.
+ */
+async function createWorkout(focus: string, routineId: string | null): Promise<string> {
   const { supabase, user } = await requireUser();
-  if ((await sessionStatus(sessionId)) === "completed") {
-    await rebuildPrs(supabase, user.id, exerciseIds);
-  }
-  revalidatePath(`/workout/${sessionId}`);
-  revalidatePath(`/workout/${sessionId}/summary`);
-}
-
-// Ad-hoc start (spec flow #1): creates a session dated today, optionally from a
-// routine. It lands on this week's plan so it shows up on the calendar, but is
-// flagged ad_hoc so conflict checks ignore it.
-export async function startWorkout(formData: FormData) {
-  const { supabase, user } = await requireUser();
-  const { timezone } = await getSettings();
-  const routineId = textField(formData, "routineId");
-  let focus = textField(formData, "focus");
-
-  if (routineId && !focus) {
-    const { data } = await supabase.from("routines").select("name").eq("id", routineId).maybeSingle();
-    focus = data?.name ?? null;
-  }
-
-  const today = todayIn(timezone);
-  const planId = await findOrCreatePlan(supabase, user.id, today);
+  const today = todayInZone();
+  const planId = await findOrCreatePlanForDate(supabase, user.id, today);
 
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
@@ -59,8 +33,9 @@ export async function startWorkout(formData: FormData) {
       type: "lift",
       planned_date: today,
       status: "planned",
-      ad_hoc: true,
       routine_id: routineId,
+      // Not on the calendar ahead of time, so conflict rules leave it alone.
+      ad_hoc: true,
     })
     .select("id")
     .single();
@@ -69,164 +44,345 @@ export async function startWorkout(formData: FormData) {
 
   const { error: detailsError } = await supabase
     .from("lift_details")
-    .insert({ session_id: session.id, focus: focus ?? "general", started_at: new Date().toISOString() });
+    .insert({ session_id: session.id, focus, started_at: new Date().toISOString() });
 
   if (detailsError) throw new Error(`Could not start workout: ${detailsError.message}`);
-
-  redirect(`/workout/${session.id}`);
+  return session.id as string;
 }
 
-// "Start" on a planned lift session from the calendar.
-export async function startPlannedWorkout(formData: FormData) {
-  const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-
-  const { error } = await supabase
-    .from("lift_details")
-    .update({ started_at: new Date().toISOString() })
-    .eq("session_id", sessionId)
-    .is("started_at", null);
-  if (error) throw new Error(`Could not start workout: ${error.message}`);
-
+export async function startWorkout(formData: FormData) {
+  const focus = String(formData.get("focus") ?? "").trim() || "general";
+  const sessionId = await createWorkout(focus, null);
   redirect(`/workout/${sessionId}`);
 }
 
+export async function startWorkoutFromRoutine(formData: FormData) {
+  const { supabase } = await requireUser();
+  const routineId = requiredString(formData, "routineId");
+
+  const { data: routine } = await supabase
+    .from("routines")
+    .select("name")
+    .eq("id", routineId)
+    .maybeSingle();
+  if (!routine) throw new Error("Routine not found");
+
+  const sessionId = await createWorkout(routine.name, routineId);
+  redirect(`/workout/${sessionId}`);
+}
+
+/**
+ * Log a set, then hand the rest timer off to the URL.
+ *
+ * The decision to rest depends on superset membership, which only the server
+ * knows, so it is made here and passed forward as `?rest=<seconds>&at=<epoch
+ * ms>`. Putting it in the URL rather than in client state means a reload mid-
+ * rest resumes the same countdown instead of losing it, and re-logging always
+ * produces a fresh `at` so the timer restarts.
+ */
 export async function addSet(formData: FormData) {
   const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-  const exerciseId = String(formData.get("exerciseId"));
+  const sessionId = requiredString(formData, "sessionId");
+  const exerciseId = requiredString(formData, "exerciseId");
+  const setType = String(formData.get("setType") || "working") as SetType;
 
+  // Sets of the same exercise in this session define both the next set number
+  // and the superset group a new set inherits.
   const { data: existing } = await supabase
     .from("lift_sets")
-    .select("set_number")
+    .select("set_number, superset_group")
     .eq("lift_details_id", sessionId)
     .eq("exercise_id", exerciseId)
-    .order("set_number", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .order("set_number", { ascending: false });
 
   const { error } = await supabase.from("lift_sets").insert({
     lift_details_id: sessionId,
     exercise_id: exerciseId,
-    set_number: (existing?.set_number ?? 0) + 1,
-    weight: numberField(formData, "weight"),
-    reps: numberField(formData, "reps"),
-    rpe: numberField(formData, "rpe"),
-    set_type: parseSetType(formData),
+    set_number: (existing?.[0]?.set_number ?? 0) + 1,
+    weight: optionalNumber(formData, "weight"),
+    reps: optionalNumber(formData, "reps"),
+    rpe: optionalNumber(formData, "rpe"),
+    set_type: setType,
+    superset_group: existing?.[0]?.superset_group ?? null,
   });
 
   if (error) throw new Error(`Could not log set: ${error.message}`);
-  await afterSetChange(sessionId, [exerciseId]);
+  revalidatePath(`/workout/${sessionId}`);
+
+  const workout = await getWorkout(sessionId);
+  const grouped: GroupedExercise[] =
+    workout?.exercises.map((e) => ({ exerciseId: e.exercise.id, supersetGroup: e.supersetGroup })) ??
+    [];
+
+  if (!shouldStartRest(setType, exerciseId, grouped)) redirect(`/workout/${sessionId}`);
+
+  const prefs = await getRestPreferences([exerciseId]);
+  const seconds = prefs.get(exerciseId) ?? DEFAULT_REST_SECONDS;
+  redirect(`/workout/${sessionId}?rest=${seconds}&at=${Date.now()}&ex=${exerciseId}`);
 }
 
+/**
+ * Correct a logged set in place. set_number is deliberately untouched: fixing
+ * a typo shouldn't reorder the exercise's sets.
+ */
 export async function updateSet(formData: FormData) {
   const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-  const setId = String(formData.get("setId"));
-
-  const { data, error } = await supabase
-    .from("lift_sets")
-    .update({
-      weight: numberField(formData, "weight"),
-      reps: numberField(formData, "reps"),
-      rpe: numberField(formData, "rpe"),
-      set_type: parseSetType(formData),
-    })
-    .eq("id", setId)
-    .select("exercise_id")
-    .single();
-
-  if (error) throw new Error(`Could not update set: ${error.message}`);
-  await afterSetChange(sessionId, [data.exercise_id]);
-}
-
-export async function deleteSet(formData: FormData) {
-  const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-  const setId = String(formData.get("setId"));
-
-  const { data: deleted, error } = await supabase
-    .from("lift_sets")
-    .delete()
-    .eq("id", setId)
-    .select("exercise_id")
-    .single();
-  if (error) throw new Error(`Could not delete set: ${error.message}`);
-
-  // Close the gap so set numbers stay 1..n (ghost text matches by number).
-  const { data: remaining } = await supabase
-    .from("lift_sets")
-    .select("id, set_number")
-    .eq("lift_details_id", sessionId)
-    .eq("exercise_id", deleted.exercise_id)
-    .order("set_number");
-  for (const [i, s] of (remaining ?? []).entries()) {
-    if (s.set_number !== i + 1) {
-      await supabase.from("lift_sets").update({ set_number: i + 1 }).eq("id", s.id);
-    }
-  }
-
-  await afterSetChange(sessionId, [deleted.exercise_id]);
-}
-
-export async function removeExerciseFromWorkout(formData: FormData) {
-  const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-  const exerciseId = String(formData.get("exerciseId"));
+  const sessionId = requiredString(formData, "sessionId");
+  const setId = requiredString(formData, "setId");
 
   const { error } = await supabase
     .from("lift_sets")
-    .delete()
-    .eq("lift_details_id", sessionId)
-    .eq("exercise_id", exerciseId);
-  if (error) throw new Error(`Could not remove exercise: ${error.message}`);
-  await afterSetChange(sessionId, [exerciseId]);
+    .update({
+      weight: optionalNumber(formData, "weight"),
+      reps: optionalNumber(formData, "reps"),
+      rpe: optionalNumber(formData, "rpe"),
+      set_type: String(formData.get("setType") || "working") as SetType,
+    })
+    .eq("id", setId);
+
+  if (error) throw new Error(`Could not update set: ${error.message}`);
+  revalidatePath(`/workout/${sessionId}`);
+}
+
+/**
+ * Delete a set and close the gap it leaves. Renumbering matters because
+ * `addSet` derives the next set number from the highest existing one — without
+ * it, deleting set 3 of 3 and logging again would reuse number 3 while a
+ * deleted middle set would leave a permanent hole in the list.
+ */
+export async function deleteSet(formData: FormData) {
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+  const setId = requiredString(formData, "setId");
+
+  const { data: target } = await supabase
+    .from("lift_sets")
+    .select("exercise_id")
+    .eq("id", setId)
+    .maybeSingle();
+
+  const { error } = await supabase.from("lift_sets").delete().eq("id", setId);
+  if (error) throw new Error(`Could not delete set: ${error.message}`);
+
+  if (target) {
+    const { data: remaining } = await supabase
+      .from("lift_sets")
+      .select("id, set_number")
+      .eq("lift_details_id", sessionId)
+      .eq("exercise_id", target.exercise_id)
+      .order("set_number", { ascending: true });
+
+    await Promise.all(
+      (remaining ?? [])
+        .map((s, i) => ({ id: s.id as string, next: i + 1, current: s.set_number as number }))
+        .filter((s) => s.next !== s.current)
+        .map((s) => supabase.from("lift_sets").update({ set_number: s.next }).eq("id", s.id)),
+    );
+  }
+
+  revalidatePath(`/workout/${sessionId}`);
+}
+
+/** Delete a whole workout. sessions cascades to lift_details, lift_sets and personal_records. */
+export async function deleteWorkout(formData: FormData) {
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+
+  const { error } = await supabase.from("sessions").delete().eq("id", sessionId);
+  if (error) throw new Error(`Could not delete workout: ${error.message}`);
+
+  revalidatePath("/");
+  revalidatePath("/history");
+  revalidatePath("/calendar");
+  redirect("/");
+}
+
+export async function updateWorkoutNotes(formData: FormData) {
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+  const notes = String(formData.get("notes") ?? "").trim() || null;
+
+  const { error } = await supabase
+    .from("lift_details")
+    .update({ notes })
+    .eq("session_id", sessionId);
+
+  if (error) throw new Error(`Could not save notes: ${error.message}`);
+  revalidatePath(`/workout/${sessionId}`);
 }
 
 export async function addExerciseToWorkout(formData: FormData) {
   // An exercise joins a workout by logging its first set, so this just
   // bounces back with the exercise pinned open on the logging screen.
-  const sessionId = String(formData.get("sessionId"));
-  const exerciseId = String(formData.get("exerciseId"));
+  const sessionId = requiredString(formData, "sessionId");
+  const exerciseId = requiredString(formData, "exerciseId");
   redirect(`/workout/${sessionId}?add=${exerciseId}`);
 }
 
-// Shared by the workout and routine pickers: `sessionId` or `routineId` says
-// where to send the new exercise.
 export async function createCustomExercise(formData: FormData) {
   const { supabase, user } = await requireUser();
-  const sessionId = textField(formData, "sessionId");
-  const routineId = textField(formData, "routineId");
-  const name = textField(formData, "name");
-  const muscleGroup = textField(formData, "muscleGroup");
-  const equipment = textField(formData, "equipment");
-
-  if (!name) throw new Error("Exercise name is required");
+  const sessionId = String(formData.get("sessionId") ?? "").trim();
+  const name = requiredString(formData, "name");
+  const muscleGroup = String(formData.get("muscleGroup") ?? "").trim() || null;
 
   const { data, error } = await supabase
     .from("exercises")
-    .insert({ name, muscle_group: muscleGroup, equipment, is_custom: true, user_id: user.id })
+    .insert({ name, muscle_group: muscleGroup, is_custom: true, user_id: user.id })
     .select("id")
     .single();
 
-  if (error) {
-    throw new Error(
-      error.code === "23505"
-        ? `You already have a custom exercise called “${name}”.`
-        : `Could not create exercise: ${error.message}`,
-    );
+  if (error) throw new Error(`Could not create exercise: ${error.message}`);
+
+  // Reachable from the workout picker and from the routine editor; only the
+  // former has a session to return to.
+  redirect(sessionId ? `/workout/${sessionId}?add=${data.id}` : `/exercise/${data.id}`);
+}
+
+export async function saveRestPreference(formData: FormData) {
+  const { supabase, user } = await requireUser();
+  const exerciseId = requiredString(formData, "exerciseId");
+  const restSeconds = optionalNumber(formData, "restSeconds");
+
+  if (restSeconds == null || restSeconds < 0 || restSeconds > 3600) {
+    throw new Error("Rest must be between 0 and 3600 seconds");
   }
 
-  if (routineId) {
-    await appendRoutineExercise(supabase, routineId, data.id);
-    redirect(`/routines/${routineId}`);
-  }
-  redirect(sessionId ? `/workout/${sessionId}?add=${data.id}` : `/exercises/${data.id}`);
+  const { error } = await supabase
+    .from("exercise_rest_prefs")
+    .upsert(
+      { user_id: user.id, exercise_id: exerciseId, rest_seconds: restSeconds, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,exercise_id" },
+    );
+
+  if (error) throw new Error(`Could not save rest preference: ${error.message}`);
+  revalidatePath("/workout", "layout");
+}
+
+/**
+ * Join an exercise to the superset above it (spec flow #4). Grouping is stored
+ * on every set of the exercise, and `addSet` copies the group onto new sets,
+ * so a group survives further logging.
+ */
+export async function groupWithPrevious(formData: FormData) {
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+  const exerciseId = requiredString(formData, "exerciseId");
+
+  const workout = await getWorkout(sessionId);
+  const index = workout?.exercises.findIndex((e) => e.exercise.id === exerciseId) ?? -1;
+  if (!workout || index < 1) throw new Error("Nothing above this exercise to superset with");
+
+  const previous = workout.exercises[index - 1];
+  // Extend the group above when there is one, so a third exercise joins the
+  // existing pair rather than starting a rival group.
+  const group = previous.supersetGroup ?? crypto.randomUUID();
+
+  const { error } = await supabase
+    .from("lift_sets")
+    .update({ superset_group: group })
+    .eq("lift_details_id", sessionId)
+    .in("exercise_id", [previous.exercise.id, exerciseId]);
+
+  if (error) throw new Error(`Could not create superset: ${error.message}`);
+  revalidatePath(`/workout/${sessionId}`);
+}
+
+/**
+ * Pull one exercise out of its superset. If that leaves a single exercise
+ * behind, the group is dissolved too — a superset of one is just an exercise.
+ */
+export async function ungroupSuperset(formData: FormData) {
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+  const exerciseId = requiredString(formData, "exerciseId");
+
+  const workout = await getWorkout(sessionId);
+  const self = workout?.exercises.find((e) => e.exercise.id === exerciseId);
+  if (!self?.supersetGroup) return;
+
+  const siblings = (workout?.exercises ?? []).filter(
+    (e) => e.supersetGroup === self.supersetGroup && e.exercise.id !== exerciseId,
+  );
+  const toClear = [exerciseId, ...(siblings.length === 1 ? [siblings[0].exercise.id] : [])];
+
+  const { error } = await supabase
+    .from("lift_sets")
+    .update({ superset_group: null })
+    .eq("lift_details_id", sessionId)
+    .in("exercise_id", toClear);
+
+  if (error) throw new Error(`Could not ungroup: ${error.message}`);
+  revalidatePath(`/workout/${sessionId}`);
+}
+
+/**
+ * PR detection, run on finish. Loads this session's sets and every earlier
+ * completed set for the same exercises, then defers the rules to `findPrs`.
+ *
+ * Idempotent: a double-clicked Finish (or a finished workout being finished
+ * again) replaces this session's records instead of adding a second copy.
+ */
+async function detectPrs(sessionId: string) {
+  const { supabase, user } = await requireUser();
+
+  const { error: clearError } = await supabase.from("personal_records").delete().eq("session_id", sessionId);
+  if (clearError) throw new Error(`Could not save PRs: ${clearError.message}`);
+
+  const { data: session } = await supabase
+    .from("sessions")
+    .select("planned_date")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (!session) throw new Error("Workout not found");
+
+  const { data: sets } = await supabase
+    .from("lift_sets")
+    .select("exercise_id, weight, reps, set_type, exercises(name)")
+    .eq("lift_details_id", sessionId);
+
+  const current: PrCandidate[] = (sets ?? []).map((s) => {
+    const exercise = Array.isArray(s.exercises) ? s.exercises[0] : s.exercises;
+    return {
+      exercise_id: s.exercise_id,
+      exercise_name: (exercise as { name?: string } | null)?.name ?? "Exercise",
+      weight: s.weight,
+      reps: s.reps,
+      set_type: s.set_type as SetType,
+    };
+  });
+  if (!current.length) return;
+
+  // Only finished workouts on or before this one count as "prior": an
+  // abandoned workout or a later-dated one can't take this session's record
+  // away from it.
+  const prior: PrSet[] = await getCompletedSets(supabase, {
+    exerciseIds: [...new Set(current.map((s) => s.exercise_id))],
+    excludeSessionId: sessionId,
+    onOrBefore: session.planned_date as string,
+  });
+
+  const hits = findPrs(current, prior);
+  if (!hits.length) return;
+
+  const { error } = await supabase.from("personal_records").insert(
+    hits.map((h) => ({
+      user_id: user.id,
+      exercise_id: h.exercise_id,
+      record_type: h.record_type,
+      value: h.value,
+      weight: h.weight,
+      reps: h.reps,
+      session_id: sessionId,
+    })),
+  );
+  if (error) throw new Error(`Could not save PRs: ${error.message}`);
 }
 
 export async function finishWorkout(formData: FormData) {
-  const { supabase, user } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+
+  await detectPrs(sessionId);
 
   const { error: detailsError } = await supabase
     .from("lift_details")
@@ -240,154 +396,49 @@ export async function finishWorkout(formData: FormData) {
     .eq("id", sessionId);
   if (error) throw new Error(`Could not finish workout: ${error.message}`);
 
-  const { data: sets } = await supabase
-    .from("lift_sets")
-    .select("exercise_id")
-    .eq("lift_details_id", sessionId);
-  await rebuildPrs(supabase, user.id, (sets ?? []).map((s) => s.exercise_id));
-
-  revalidatePath("/", "layout");
+  // A lift completes by being logged, which is how the calendar learns it
+  // happened (weekly-calendar spec flow #4).
+  revalidatePath("/calendar");
   redirect(`/workout/${sessionId}/summary`);
 }
 
-// Abandon an in-progress workout. An ad-hoc one disappears entirely; one
-// started from a planned session goes back to being planned.
-export async function discardWorkout(formData: FormData) {
-  const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-
-  const { data: session } = await supabase
-    .from("sessions")
-    .select("ad_hoc, status")
-    .eq("id", sessionId)
-    .maybeSingle();
-  if (!session || session.status === "completed") redirect(`/workout/${sessionId}`);
-
-  if (session.ad_hoc) {
-    const { error } = await supabase.from("sessions").delete().eq("id", sessionId);
-    if (error) throw new Error(`Could not discard workout: ${error.message}`);
-    revalidatePath("/", "layout");
-    redirect("/");
-  }
-
-  await supabase.from("lift_sets").delete().eq("lift_details_id", sessionId);
-  await supabase
-    .from("lift_details")
-    .update({ started_at: null, completed_at: null })
-    .eq("session_id", sessionId);
-  revalidatePath("/", "layout");
-  redirect(`/sessions/${sessionId}`);
-}
-
-// Delete a logged workout outright (spec review note: edit/delete flow).
-export async function deleteWorkout(formData: FormData) {
-  const { supabase, user } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-
-  const { data: sets } = await supabase
-    .from("lift_sets")
-    .select("exercise_id")
-    .eq("lift_details_id", sessionId);
-
-  const { error } = await supabase.from("sessions").delete().eq("id", sessionId);
-  if (error) throw new Error(`Could not delete workout: ${error.message}`);
-
-  await rebuildPrs(supabase, user.id, (sets ?? []).map((s) => s.exercise_id));
-  revalidatePath("/", "layout");
-  redirect("/history");
-}
-
-export async function updateWorkoutDetails(formData: FormData) {
-  const { supabase } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-  const { error } = await supabase
-    .from("lift_details")
-    .update({ focus: textField(formData, "focus") ?? "general", notes: textField(formData, "notes") })
-    .eq("session_id", sessionId);
-  if (error) throw new Error(`Could not save workout: ${error.message}`);
-  revalidatePath(`/workout/${sessionId}`);
-  revalidatePath(`/workout/${sessionId}/summary`);
-}
-
-export async function setRestSeconds(formData: FormData) {
-  const { supabase, user } = await requireUser();
-  const exerciseId = String(formData.get("exerciseId"));
-  const seconds = numberField(formData, "restSeconds");
-  const path = textField(formData, "path");
-
-  if (seconds == null) {
-    await supabase.from("exercise_preferences").delete().eq("exercise_id", exerciseId).eq("user_id", user.id);
-  } else {
-    const { error } = await supabase.from("exercise_preferences").upsert({
-      user_id: user.id,
-      exercise_id: exerciseId,
-      rest_seconds: Math.max(0, Math.min(3600, Math.round(seconds))),
-    });
-    if (error) throw new Error(`Could not save rest timer: ${error.message}`);
-  }
-  if (path) revalidatePath(path);
-}
-
-// Save a workout as a routine (spec flow #7): exercise order plus set/rep
-// targets, never weights. Targets come from the working sets actually done.
+/**
+ * Save a workout's exercises as a reusable routine (spec flow #7). Weights are
+ * intentionally not copied — a routine is a plan, not a record.
+ */
 export async function saveWorkoutAsRoutine(formData: FormData) {
   const { supabase, user } = await requireUser();
-  const sessionId = String(formData.get("sessionId"));
-  const name = textField(formData, "name");
-  if (!name) throw new Error("Routine name is required");
+  const sessionId = requiredString(formData, "sessionId");
+  const name = requiredString(formData, "name");
 
-  const { data: sets } = await supabase
-    .from("lift_sets")
-    .select("exercise_id, reps, set_type, created_at")
-    .eq("lift_details_id", sessionId)
-    .order("created_at");
+  const workout = await getWorkout(sessionId);
+  if (!workout?.exercises.length) throw new Error("Nothing to save — log a set first");
 
-  const order: string[] = [];
-  const stats = new Map<string, number[]>();
-  for (const s of sets ?? []) {
-    if (!order.includes(s.exercise_id)) order.push(s.exercise_id);
-    if (s.set_type === "warmup") continue;
-    stats.set(s.exercise_id, [...(stats.get(s.exercise_id) ?? []), s.reps ?? 0]);
-  }
-
-  const { data: routine, error } = await supabase
+  const { data: routine, error: routineError } = await supabase
     .from("routines")
     .insert({ user_id: user.id, name })
     .select("id")
     .single();
-  if (error) {
-    throw new Error(
-      error.code === "23505" ? `You already have a routine called “${name}”.` : `Could not save routine: ${error.message}`,
-    );
-  }
 
-  const mode = (xs: number[]) => {
-    const counts = new Map<number, number>();
-    for (const x of xs) if (x > 0) counts.set(x, (counts.get(x) ?? 0) + 1);
-    return [...counts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0]?.[0] ?? null;
-  };
+  if (routineError) throw new Error(`Could not create routine: ${routineError.message}`);
 
-  if (order.length) {
-    const { error: exError } = await supabase.from("routine_exercises").insert(
-      order.map((exerciseId, i) => {
-        const reps = stats.get(exerciseId) ?? [];
-        return {
-          routine_id: routine.id,
-          exercise_id: exerciseId,
-          target_sets: reps.length || null,
-          target_reps: mode(reps),
-          position: i,
-        };
-      }),
-    );
-    if (exError) throw new Error(`Could not save routine: ${exError.message}`);
-  }
+  const rows = workout.exercises.map((e, i) => {
+    const { targetSets, targetReps } = routineTargetsFromSets(e.sets);
+    return {
+      routine_id: routine.id,
+      exercise_id: e.exercise.id,
+      target_sets: targetSets,
+      target_reps: targetReps,
+      position: i,
+    };
+  });
 
-  // Link this workout to the new routine so it counts toward its progress
-  // chart — unless it was started from another routine, whose history it
-  // belongs to.
-  await supabase.from("sessions").update({ routine_id: routine.id }).eq("id", sessionId).is("routine_id", null);
+  const { error } = await supabase.from("routine_exercises").insert(rows);
+  if (error) throw new Error(`Could not save routine: ${error.message}`);
 
-  revalidatePath("/routines");
+  // Attribute the session to the routine it just produced, so it counts as the
+  // first data point on that routine's progress chart.
+  await supabase.from("sessions").update({ routine_id: routine.id }).eq("id", sessionId);
+
   redirect(`/routines/${routine.id}`);
 }

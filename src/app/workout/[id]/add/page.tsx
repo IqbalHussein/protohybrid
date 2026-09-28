@@ -1,7 +1,7 @@
-import { ExercisePicker } from "@/components/ExercisePicker";
-import { addExerciseToWorkout } from "../../actions";
+import ExercisePicker from "@/components/ExercisePicker";
+import { addExerciseToWorkout, createCustomExercise } from "../../actions";
 
-export default async function AddExercisePage({
+export default async function AddExerciseToWorkoutPage({
   params,
   searchParams,
 }: {
@@ -9,13 +9,18 @@ export default async function AddExercisePage({
   searchParams: Promise<{ q?: string; muscle?: string; equipment?: string }>;
 }) {
   const { id } = await params;
+  const { q = "", muscle = "", equipment = "" } = await searchParams;
+
   return (
     <ExercisePicker
       title="Add exercise"
       backHref={`/workout/${id}`}
+      query={q}
+      muscle={muscle}
+      equipment={equipment}
+      pickAction={addExerciseToWorkout}
+      createAction={createCustomExercise}
       hidden={{ sessionId: id }}
-      addAction={addExerciseToWorkout}
-      query={await searchParams}
     />
   );
 }

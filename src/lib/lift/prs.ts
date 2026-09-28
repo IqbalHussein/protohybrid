@@ -1,164 +1,100 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchAll } from "@/lib/plans";
 import { countsAsWork, estimated1RM, setVolume } from "./math";
-import type { PrRecordType, SetType } from "./types";
+import type { PrHit, PrRecordType, SetType } from "./types";
 
+/** The minimum a set needs to expose for PR comparison. */
 export type PrSet = {
-  session_id: string;
   exercise_id: string;
   weight: number | null;
   reps: number | null;
   set_type: SetType;
 };
 
-export type PrSession = { id: string; achieved_at: string };
-
-export type PrRow = {
-  exercise_id: string;
-  session_id: string;
-  record_type: PrRecordType;
-  value: number;
-  weight: number | null;
-  reps: number | null;
-  achieved_at: string;
-};
+/** A set from the session being finished, carrying its exercise's name for display. */
+export type PrCandidate = PrSet & { exercise_name: string };
 
 /**
- * Replays completed sessions in order and emits a record every time a working
- * set beats everything *before* its session, for each of the four PR types.
- * Warm-ups are neither PR-eligible nor counted toward volume. Within a
- * session, only the best set per exercise and type is kept.
+ * Compare this session's sets against every prior set for the same exercises
+ * and return the records broken. Pure so the rules are testable without a
+ * database; `detectPrs` in the workout actions supplies the rows.
  *
- * Replaying instead of comparing one session against "all other sessions"
- * keeps records correct when an older workout is edited or deleted after
- * later ones exist.
+ * Rules, all four from the spec:
+ *   - heaviest_weight — most weight on a single set, any rep count
+ *   - best_e1rm       — Epley estimate
+ *   - best_volume     — highest single-set weight × reps
+ *   - most_reps       — most reps *at a given weight*, so it only fires when
+ *                       that exact weight has been lifted before; without that
+ *                       guard, every first-ever set at a new weight would
+ *                       trivially "beat" a nonexistent prior.
+ *
+ * Warm-ups are excluded on both sides. Sets missing a weight or a rep count
+ * are skipped — a bodyweight-only entry has no comparable number.
+ *
+ * With no history at all, the first three record types do fire: a first
+ * working set genuinely is that exercise's best so far, which is also how
+ * Hevy behaves.
+ *
+ * At most one hit per (exercise, record type) is returned, holding the best
+ * value of the session.
  */
-export function computePrs(sessions: PrSession[], sets: PrSet[]): PrRow[] {
-  const order = [...sessions].sort((a, b) => a.achieved_at.localeCompare(b.achieved_at));
-  const bySession = new Map<string, PrSet[]>();
-  for (const s of sets) {
-    if (!countsAsWork(s.set_type) || s.weight == null || s.reps == null) continue;
-    bySession.set(s.session_id, [...(bySession.get(s.session_id) ?? []), s]);
-  }
+export function findPrs(current: PrCandidate[], prior: PrSet[]): PrHit[] {
+  const working = current.filter((s) => countsAsWork(s.set_type));
+  const priorWorking = prior.filter((s) => countsAsWork(s.set_type));
 
-  type Best = { heaviest: number; e1rm: number; volume: number; repsAt: Map<number, number> };
-  const best = new Map<string, Best>();
-  const out: PrRow[] = [];
+  const bestPrior = (exerciseId: string, score: (s: PrSet) => number) =>
+    priorWorking
+      .filter((s) => s.exercise_id === exerciseId)
+      .reduce((max, s) => Math.max(max, score(s)), 0);
 
-  for (const session of order) {
-    const hits = new Map<string, PrRow>();
-    const hit = (row: Omit<PrRow, "session_id" | "achieved_at">) => {
-      const key = `${row.exercise_id}:${row.record_type}`;
-      const prev = hits.get(key);
-      if (!prev || row.value > prev.value) {
-        hits.set(key, { ...row, session_id: session.id, achieved_at: session.achieved_at });
+  const hits: PrHit[] = [];
+  const record = (
+    set: PrCandidate,
+    type: PrRecordType,
+    value: number,
+  ) => {
+    const existing = hits.find((h) => h.exercise_id === set.exercise_id && h.record_type === type);
+    if (existing) {
+      if (value > existing.value) {
+        existing.value = value;
+        existing.weight = set.weight;
+        existing.reps = set.reps;
       }
-    };
+      return;
+    }
+    hits.push({
+      exercise_id: set.exercise_id,
+      exercise_name: set.exercise_name,
+      record_type: type,
+      value,
+      weight: set.weight,
+      reps: set.reps,
+    });
+  };
 
-    const sessionSets = bySession.get(session.id) ?? [];
-    for (const s of sessionSets) {
-      const b = best.get(s.exercise_id) ?? { heaviest: 0, e1rm: 0, volume: 0, repsAt: new Map() };
-      const weight = s.weight!;
-      const reps = s.reps!;
-      const base = { exercise_id: s.exercise_id, weight, reps };
+  for (const s of working) {
+    const { weight, reps } = s;
+    if (weight == null || reps == null) continue;
 
-      if (weight > b.heaviest) hit({ ...base, record_type: "heaviest_weight", value: weight });
-      const e1rm = estimated1RM(weight, reps);
-      if (e1rm > b.e1rm) hit({ ...base, record_type: "best_e1rm", value: e1rm });
-      const volume = setVolume(weight, reps);
-      if (volume > b.volume) hit({ ...base, record_type: "best_volume", value: volume });
-      // Most reps is only meaningful compared against the same weight, and
-      // only once there's a previous attempt at it to beat.
-      const priorReps = b.repsAt.get(weight) ?? 0;
-      if (priorReps > 0 && reps > priorReps) hit({ ...base, record_type: "most_reps", value: reps });
+    if (weight > bestPrior(s.exercise_id, (p) => p.weight ?? 0)) {
+      record(s, "heaviest_weight", weight);
     }
 
-    // Fold this session in only after scoring it, so sets within one session
-    // don't compete with each other as "prior history".
-    for (const s of sessionSets) {
-      const b = best.get(s.exercise_id) ?? { heaviest: 0, e1rm: 0, volume: 0, repsAt: new Map() };
-      b.heaviest = Math.max(b.heaviest, s.weight!);
-      b.e1rm = Math.max(b.e1rm, estimated1RM(s.weight, s.reps));
-      b.volume = Math.max(b.volume, setVolume(s.weight, s.reps));
-      b.repsAt.set(s.weight!, Math.max(b.repsAt.get(s.weight!) ?? 0, s.reps!));
-      best.set(s.exercise_id, b);
+    const e1rm = estimated1RM(weight, reps);
+    if (e1rm > bestPrior(s.exercise_id, (p) => estimated1RM(p.weight, p.reps))) {
+      record(s, "best_e1rm", e1rm);
     }
 
-    out.push(...hits.values());
+    const volume = setVolume(weight, reps);
+    if (volume > bestPrior(s.exercise_id, (p) => setVolume(p.weight, p.reps))) {
+      record(s, "best_volume", volume);
+    }
+
+    const priorRepsAtWeight = priorWorking
+      .filter((p) => p.exercise_id === s.exercise_id && p.weight === weight)
+      .reduce((max, p) => Math.max(max, p.reps ?? 0), 0);
+    if (priorRepsAtWeight > 0 && reps > priorRepsAtWeight) {
+      record(s, "most_reps", reps);
+    }
   }
-  return out;
-}
 
-/**
- * Recomputes stored personal_records for the given exercises from scratch.
- * Called on finish, and whenever a completed workout's sets change.
- */
-export async function rebuildPrs(
-  supabase: SupabaseClient,
-  userId: string,
-  exerciseIds: string[],
-): Promise<void> {
-  const ids = [...new Set(exerciseIds)];
-  if (!ids.length) return;
-
-  const sessions = await fetchAll<{
-    id: string;
-    planned_date: string;
-    lift_details: { completed_at: string | null } | { completed_at: string | null }[] | null;
-  }>((from, to) =>
-    supabase
-      .from("sessions")
-      .select("id, planned_date, lift_details(completed_at)")
-      .eq("type", "lift")
-      .eq("status", "completed")
-      .order("id")
-      .range(from, to),
-  );
-
-  const completed: PrSession[] = sessions.map((s) => {
-    const d = Array.isArray(s.lift_details) ? s.lift_details[0] : s.lift_details;
-    return { id: s.id, achieved_at: d?.completed_at ?? `${s.planned_date}T12:00:00Z` };
-  });
-  const completedIds = new Set(completed.map((s) => s.id));
-
-  const rawSets = await fetchAll<{
-    lift_details_id: string;
-    exercise_id: string;
-    weight: number | null;
-    reps: number | null;
-    set_type: SetType;
-  }>((from, to) =>
-    supabase
-      .from("lift_sets")
-      .select("lift_details_id, exercise_id, weight, reps, set_type")
-      .in("exercise_id", ids)
-      .order("id")
-      .range(from, to),
-  );
-
-  const sets: PrSet[] = rawSets
-    .filter((s) => completedIds.has(s.lift_details_id))
-    .map((s) => ({
-      session_id: s.lift_details_id,
-      exercise_id: s.exercise_id,
-      weight: s.weight == null ? null : Number(s.weight),
-      reps: s.reps,
-      set_type: s.set_type,
-    }));
-
-  const rows = computePrs(completed, sets);
-
-  const { error: delError } = await supabase
-    .from("personal_records")
-    .delete()
-    .eq("user_id", userId)
-    .in("exercise_id", ids);
-  if (delError) throw new Error(`Could not update PRs: ${delError.message}`);
-
-  if (rows.length) {
-    const { error } = await supabase
-      .from("personal_records")
-      .insert(rows.map((r) => ({ ...r, user_id: userId })));
-    if (error) throw new Error(`Could not save PRs: ${error.message}`);
-  }
+  return hits;
 }

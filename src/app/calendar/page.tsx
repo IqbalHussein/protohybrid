@@ -1,135 +1,121 @@
 import Link from "next/link";
-import { getWeek } from "@/lib/calendar";
-import { addDays, formatDate, formatTimeIn, isDateString, mondayOf, todayIn, weekDates, zonedToUtc } from "@/lib/dates";
-import { formatKm } from "@/lib/format";
-import { getSettings } from "@/lib/settings";
-import { liftActualSummary, plannedSummary, runActualSummary } from "@/lib/summaries";
-import { WeekBoard, type BoardDay } from "@/components/WeekBoard";
-import { addBusyBlock } from "../sessions/actions";
+import WeekGrid from "@/components/calendar/WeekGrid";
+import { conflictWindow, findConflicts } from "@/lib/calendar/conflicts";
+import { getLoggedSetCounts, getSessionsBetween, getWeek } from "@/lib/calendar/queries";
+import { getConflictRules } from "@/lib/calendar/rules";
+import { buildWeekView } from "@/lib/calendar/week-view";
+import { addWeeks, currentWeekStart, formatWeekRange, mondayOf } from "@/lib/week";
+import { todayInZone } from "@/lib/time";
 
-export default async function CalendarPage({ searchParams }: { searchParams: Promise<{ week?: string }> }) {
+/**
+ * The week grid (spec Screens #1) — the screen the rest of the MVP hangs off.
+ *
+ * Read-only: browsing forward through empty weeks must leave no `plans` rows
+ * behind, so nothing here writes. `plans` is created lazily on the first write
+ * into a week, the way the logger already does it.
+ */
+export default async function CalendarPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ week?: string }>;
+}) {
   const { week } = await searchParams;
-  const { timezone } = await getSettings();
-  const today = todayIn(timezone);
-  const monday = mondayOf(week && isDateString(week) ? week : today);
-  const { sessions, busy, conflicts, liftActuals, tz } = await getWeek(monday);
 
-  const conflictsBySession = new Map<string, string[]>();
-  for (const c of conflicts) {
-    for (const id of c.sessionIds) conflictsBySession.set(id, [...(conflictsBySession.get(id) ?? []), c.message]);
-  }
+  // Any date in the URL resolves to its Monday, so a hand-edited or stale link
+  // lands on a real week rather than a seven-day window starting mid-week.
+  const weekStart = week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? mondayOf(week) : currentWeekStart();
 
-  const days: BoardDay[] = weekDates(monday).map((date) => {
-    const dayStart = zonedToUtc(date, "00:00", tz).getTime();
-    const dayEnd = zonedToUtc(addDays(date, 1), "00:00", tz).getTime();
-    return {
-      date,
-      weekday: formatDate(date, { weekday: "short", month: undefined, day: undefined }),
-      dayLabel: formatDate(date, { weekday: undefined }),
-      isToday: date === today,
-      cards: sessions
-        .filter((s) => s.planned_date === date)
-        .map((s) => ({
-          id: s.id,
-          type: s.type,
-          time: s.planned_time?.slice(0, 5) ?? null,
-          status: s.status,
-          adHoc: s.ad_hoc,
-          label: s.type === "run" ? `${s.run_details?.run_type ?? ""} run` : s.lift_details?.focus ?? "Lift",
-          planned: plannedSummary(s),
-          actual: s.type === "run" ? runActualSummary(s) : liftActualSummary(liftActuals.get(s.id)),
-          conflicts: conflictsBySession.get(s.id) ?? [],
-        })),
-      busy: busy
-        .filter((b) => new Date(b.start_time).getTime() < dayEnd && new Date(b.end_time).getTime() > dayStart)
-        .map((b) => ({
-          id: b.id,
-          title: b.title,
-          range: `${formatTimeIn(b.start_time, tz)}–${formatTimeIn(b.end_time, tz)}`,
-          manual: b.source === "manual",
-        })),
-    };
-  });
+  const [data, rules] = await Promise.all([getWeek(weekStart), getConflictRules()]);
 
-  const runs = sessions.filter((s) => s.type === "run");
-  const lifts = sessions.filter((s) => s.type === "lift");
-  const plannedKm = runs.reduce((sum, s) => sum + Number(s.run_details?.target_distance_km ?? 0), 0);
-  const actualKm = runs.reduce((sum, s) => sum + Number(s.run_details?.actual_distance_km ?? 0), 0);
-  const liftVolume = [...liftActuals.values()].reduce((sum, a) => sum + a.volume, 0);
-  const done = (xs: typeof sessions) => xs.filter((s) => s.status === "completed").length;
+  const liftIds = data.sessions.filter((s) => s.type === "lift").map((s) => s.id);
+  const reach = conflictWindow(weekStart, rules);
+  const [setCounts, nearby] = await Promise.all([
+    getLoggedSetCounts(liftIds),
+    getSessionsBetween(reach.from, reach.to),
+  ]);
+
+  const conflicts = findConflicts(nearby, data.busyBlocks, rules);
+  const view = buildWeekView(data, { setCounts, conflicts });
+  const today = todayInZone();
 
   return (
-    <main className="mx-auto flex max-w-6xl flex-col gap-5 px-4 py-8">
+    <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
-        <h1 className="text-xl font-semibold">
-          Week of {formatDate(monday, { weekday: undefined, year: "numeric" })}
-        </h1>
-        <div className="flex gap-3 text-sm">
-          <Link href={`/calendar?week=${addDays(monday, -7)}`} className="underline">
-            ← Prev
+        <h1 className="text-xl font-semibold">Week</h1>
+        <span className="flex gap-3 text-sm text-neutral-500">
+          <Link href="/settings" className="underline">
+            Rules &amp; sync
           </Link>
-          <Link href="/calendar" className="underline">
-            This week
+          <Link href="/" className="underline">
+            Home
           </Link>
-          <Link href={`/calendar?week=${addDays(monday, 7)}`} className="underline">
-            Next →
-          </Link>
-        </div>
+        </span>
       </header>
 
-      <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-        {[
-          ["Runs done / planned", `${done(runs)} / ${runs.length}`],
-          ["Distance actual / planned", `${formatKm(actualKm)} / ${formatKm(plannedKm)}`],
-          ["Lifts done / planned", `${done(lifts)} / ${lifts.length}`],
-          ["Lift volume", `${liftVolume.toLocaleString()} lb`],
-        ].map(([label, value]) => (
-          <div key={label} className="rounded border border-neutral-200 px-3 py-2">
-            <dt className="text-xs text-neutral-500">{label}</dt>
-            <dd className="font-medium">{value}</dd>
-          </div>
-        ))}
-      </dl>
-
-      {conflicts.length ? (
-        <section className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm">
-          <h2 className="font-medium text-red-800">
-            {conflicts.length} conflict{conflicts.length > 1 ? "s" : ""} this week
-          </h2>
-          <ul className="mt-1 list-disc pl-5 text-red-700">
-            {conflicts.map((c) => (
-              <li key={c.key}>
-                <span className="font-medium">{c.ruleName}:</span> {c.message}
-              </li>
-            ))}
-          </ul>
-          <Link href="/settings#rules" className="mt-1 inline-block text-xs text-red-700 underline">
-            Adjust rules
+      <nav className="flex flex-wrap items-center gap-2">
+        <Link
+          href={`/calendar?week=${addWeeks(weekStart, -1)}`}
+          className="rounded border border-neutral-300 px-3 py-1.5 text-sm"
+          rel="prev"
+        >
+          ← Previous
+        </Link>
+        <span className="min-w-44 text-center text-sm font-medium tabular-nums">
+          {formatWeekRange(weekStart)}
+        </span>
+        <Link
+          href={`/calendar?week=${addWeeks(weekStart, 1)}`}
+          className="rounded border border-neutral-300 px-3 py-1.5 text-sm"
+          rel="next"
+        >
+          Next →
+        </Link>
+        {weekStart === currentWeekStart() ? null : (
+          <Link href="/calendar" className="text-sm text-neutral-500 underline">
+            This week
           </Link>
-        </section>
+        )}
+
+        <span className="ml-auto flex gap-2">
+          <Link
+            href={`/calendar/session/new?date=${today}&type=run`}
+            className="rounded border border-sky-300 bg-sky-50 px-3 py-1.5 text-sm text-sky-900"
+          >
+            + Run
+          </Link>
+          <Link
+            href={`/calendar/session/new?date=${today}&type=lift`}
+            className="rounded border border-violet-300 bg-violet-50 px-3 py-1.5 text-sm text-violet-900"
+          >
+            + Lift
+          </Link>
+          <Link
+            href={`/calendar/busy/new?date=${today}&week=${weekStart}`}
+            className="rounded border border-neutral-300 px-3 py-1.5 text-sm"
+          >
+            + Commitment
+          </Link>
+        </span>
+      </nav>
+
+      {/* The week-level half of the conflict surface; the rules are edited in
+          Settings. */}
+      {view.warnings.length ? (
+        <ul className="rounded border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          {view.warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
       ) : null}
 
-      <WeekBoard days={days} />
+      <WeekGrid view={view} />
 
-      <div className="grid gap-4 md:grid-cols-2">
-        <Link href={`/sessions/new?date=${monday < today && today <= addDays(monday, 6) ? today : monday}`} className="rounded bg-neutral-900 px-4 py-3 text-center text-white">
-          Plan a session
-        </Link>
-        <details className="rounded border border-neutral-200 p-3 text-sm">
-          <summary className="cursor-pointer font-medium">Add a busy block</summary>
-          <form action={addBusyBlock} className="mt-2 flex flex-wrap items-end gap-2">
-            <input name="title" placeholder="Class, shift…" className="flex-1 rounded border border-neutral-300 px-2 py-1.5" />
-            <input name="date" type="date" required defaultValue={monday} className="rounded border border-neutral-300 px-2 py-1.5" />
-            <input name="start" type="time" required className="rounded border border-neutral-300 px-2 py-1.5" />
-            <input name="end" type="time" required className="rounded border border-neutral-300 px-2 py-1.5" />
-            <button className="rounded border border-neutral-300 px-3 py-1.5">Add</button>
-          </form>
-          <p className="mt-2 text-xs text-neutral-500">
-            Or <Link href="/settings#integrations" className="underline">connect Google Calendar</Link> to pull them in automatically.
-          </p>
-        </details>
-      </div>
-      <p className="text-xs text-neutral-400">Drag sessions between days to reschedule. Times shown in {tz}.</p>
+      {data.sessions.length === 0 && data.busyBlocks.length === 0 ? (
+        <p className="text-sm text-neutral-500">
+          Nothing planned this week. Add a run or a lift above, or drop in the classes and shifts
+          you have to train around.
+        </p>
+      ) : null}
     </main>
   );
 }
