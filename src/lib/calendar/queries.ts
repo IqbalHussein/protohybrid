@@ -65,14 +65,14 @@ export async function getWeek(weekStart: string): Promise<Week> {
       .order("planned_start_time", { nullsFirst: true }),
 
     // Blocks are timestamptz, so the week's bounds are converted through the
-    // app's zone — and a block starting before Monday can still overlap it,
-    // hence a day of slack on the lower bound.
+    // app's zone. Anything overlapping the week counts, however early it
+    // started — a block from Friday to Tuesday still covers Monday.
     supabase
       .from("busy_blocks")
       .select("id, title, start_time, end_time, source")
       .eq("user_id", user.id)
-      .gte("start_time", zonedToUtc(addDays(weekStart, -1)).toISOString())
       .lt("start_time", zonedToUtc(weekEnd).toISOString())
+      .gt("end_time", zonedToUtc(weekStart).toISOString())
       .order("start_time"),
   ]);
 

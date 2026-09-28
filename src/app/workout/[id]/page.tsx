@@ -83,6 +83,10 @@ export default async function WorkoutPage({
   // The rest timer is entirely server-decided; see addSet.
   const parsedRest = Number(rest);
   const restSeconds = Number.isFinite(parsedRest) && parsedRest > 0 ? parsedRest : null;
+  // A hand-edited or truncated URL must drop the timer, not crash the page:
+  // new Date(NaN).toISOString() throws.
+  const restStartMs = Number(at);
+  const restStartedAt = at && Number.isFinite(restStartMs) && restStartMs > 0 ? new Date(restStartMs).toISOString() : null;
   const restExercise = ex ? await getExercise(ex) : null;
   const restPrefs = ex ? await getRestPreferences([ex]) : new Map<string, number>();
 
@@ -250,7 +254,7 @@ export default async function WorkoutPage({
         </div>
       )}
 
-      {restSeconds && at && restExercise ? (
+      {restSeconds && restStartedAt && restExercise ? (
         <RestTimer
           /* Keyed on the start time so each logged set mounts a fresh timer
              rather than reusing the previous countdown's state. */
@@ -259,7 +263,7 @@ export default async function WorkoutPage({
              preference here means saving a new default takes effect on the
              next render rather than only on the next set. */
           seconds={restPrefs.get(restExercise.id) ?? restSeconds ?? DEFAULT_REST_SECONDS}
-          startedAt={new Date(Number(at)).toISOString()}
+          startedAt={restStartedAt}
           exerciseId={restExercise.id}
           exerciseName={restExercise.name}
         />

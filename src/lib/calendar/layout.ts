@@ -104,7 +104,11 @@ export function splitAcrossDays(
 ): DaySegment[] {
   const segments: DaySegment[] = [];
 
-  for (let date = startDate, guard = 0; date <= endDate && guard < 14; date = addDays(date, 1), guard += 1) {
+  // Start at the first visible day: a block that began weeks ago still covers
+  // this one, and walking from its real start would hit the guard first.
+  const first = days.length && startDate < days[0] ? days[0] : startDate;
+
+  for (let date = first, guard = 0; date <= endDate && guard < 14; date = addDays(date, 1), guard += 1) {
     const isFirst = date === startDate;
     const isLast = date === endDate;
 

@@ -256,47 +256,75 @@ export async function getActiveWorkout() {
   return data;
 }
 
+/** Which completed sets to load; every field narrows the result further. */
+export type SetScope = {
+  exerciseIds?: string[];
+  routineId?: string;
+  excludeSessionId?: string;
+  /** Only sessions dated on or before this YYYY-MM-DD. */
+  onOrBefore?: string;
+};
+
 /**
- * Attach each set's session date, the shape `sessionStats` aggregates.
+ * Completed sets, dated by their session — the input to charts, history and
+ * PR detection.
  *
- * lift_sets knows only its lift_details_id, so the dates come from a second
- * lookup against sessions. Sets whose session is missing (which RLS makes
- * impossible in practice) are dropped rather than dated with a guess.
+ * lift_sets knows only its lift_details_id, so the session's status and date
+ * come through the lift_details -> sessions embed, filtered server-side:
+ * an in-progress or skipped workout never counts. Paged, because PostgREST
+ * caps a response at its max-rows (1000 on Supabase) without saying so, and a
+ * truncated history would silently drop old data from charts and let PR
+ * detection miss the real best.
  */
-async function withSessionDates(
-  supabase: UserClient,
-  rows: {
-    lift_details_id: string;
-    exercise_id: string;
-    weight: number | null;
-    reps: number | null;
-    set_type: HistorySet["set_type"];
-  }[],
-): Promise<HistorySet[]> {
-  if (!rows.length) return [];
+export async function getCompletedSets(supabase: UserClient, scope: SetScope): Promise<HistorySet[]> {
+  const rows: Record<string, unknown>[] = [];
 
-  const ids = [...new Set(rows.map((r) => r.lift_details_id))];
-  const { data: sessions } = await supabase
-    .from("sessions")
-    .select("id, planned_date")
-    .in("id", ids)
-    .eq("status", "completed");
+  // Advance by what actually came back rather than a fixed page size, so a
+  // project configured with a lower max-rows still reads everything.
+  for (let from = 0; ; ) {
+    let query = supabase
+      .from("lift_sets")
+      .select(
+        "id, lift_details_id, exercise_id, weight, reps, set_type, lift_details!inner(sessions!inner(planned_date))",
+      )
+      .eq("lift_details.sessions.status", "completed");
+    if (scope.exerciseIds) query = query.in("exercise_id", scope.exerciseIds);
+    if (scope.routineId) query = query.eq("lift_details.sessions.routine_id", scope.routineId);
+    if (scope.excludeSessionId) query = query.neq("lift_details_id", scope.excludeSessionId);
+    if (scope.onOrBefore) query = query.lte("lift_details.sessions.planned_date", scope.onOrBefore);
 
-  const dates = new Map((sessions ?? []).map((s) => [s.id as string, s.planned_date as string]));
+    const { data, error } = await query.order("id").range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`Could not load sets: ${error.message}`);
+    if (!data?.length) break;
+    rows.push(...(data as Record<string, unknown>[]));
+    from += data.length;
+  }
 
-  return rows
-    .filter((r) => dates.has(r.lift_details_id))
-    .map((r) => ({ ...r, session_date: dates.get(r.lift_details_id)! }));
+  return rows.flatMap((r) => {
+    const session = one(one(r.lift_details as { sessions: unknown } | null)?.sessions as
+      | { planned_date: string }
+      | { planned_date: string }[]
+      | null);
+    if (!session) return [];
+    return [
+      {
+        lift_details_id: r.lift_details_id as string,
+        exercise_id: r.exercise_id as string,
+        weight: r.weight as number | null,
+        reps: r.reps as number | null,
+        set_type: r.set_type as HistorySet["set_type"],
+        session_date: session.planned_date,
+      },
+    ];
+  });
 }
+
+const PAGE_SIZE = 1000;
 
 /** Every completed set of one exercise, dated — the input to its progress charts. */
 export async function getExerciseHistory(exerciseId: string): Promise<HistorySet[]> {
   const { supabase } = await requireUser();
-  const { data } = await supabase
-    .from("lift_sets")
-    .select("lift_details_id, exercise_id, weight, reps, set_type")
-    .eq("exercise_id", exerciseId);
-  return withSessionDates(supabase, data ?? []);
+  return getCompletedSets(supabase, { exerciseIds: [exerciseId] });
 }
 
 export async function getExercisePrs(exerciseId: string) {
@@ -367,20 +395,5 @@ export async function getRoutine(
  */
 export async function getRoutineHistory(routineId: string): Promise<HistorySet[]> {
   const { supabase } = await requireUser();
-
-  const { data: sessions } = await supabase
-    .from("sessions")
-    .select("id")
-    .eq("routine_id", routineId)
-    .eq("status", "completed");
-
-  const ids = (sessions ?? []).map((s) => s.id as string);
-  if (!ids.length) return [];
-
-  const { data } = await supabase
-    .from("lift_sets")
-    .select("lift_details_id, exercise_id, weight, reps, set_type")
-    .in("lift_details_id", ids);
-
-  return withSessionDates(supabase, data ?? []);
+  return getCompletedSets(supabase, { routineId });
 }

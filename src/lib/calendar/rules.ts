@@ -26,6 +26,14 @@ async function seedDefaultRules(
   supabase: Awaited<ReturnType<typeof requireUser>>["supabase"],
   userId: string,
 ) {
+  // The common case — already seeded — costs one read and no writes.
+  const { data: settings } = await supabase
+    .from("user_settings")
+    .select("conflict_rules_seeded")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (settings?.conflict_rules_seeded) return;
+
   await supabase
     .from("user_settings")
     .upsert({ user_id: userId }, { onConflict: "user_id", ignoreDuplicates: true });

@@ -102,6 +102,13 @@ describe("splitAcrossDays", () => {
     ]);
   });
 
+  it("still draws a block that began weeks before the visible days", () => {
+    const segments = splitAcrossDays("2026-08-20", 540, "2026-09-15", 600, days);
+    expect(segments.map((s) => s.date)).toEqual(["2026-09-14", "2026-09-15"]);
+    expect(segments[0]).toMatchObject({ startMin: 0, startsHere: false });
+    expect(segments[1]).toMatchObject({ endMin: 600, endsHere: true });
+  });
+
   it("clips an overnight shift into both days", () => {
     // 10pm to 6am is one row but two things to draw; a grid that placed it
     // only on the first day would leave the next morning looking free.

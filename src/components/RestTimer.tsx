@@ -30,13 +30,17 @@ export default function RestTimer({ seconds, startedAt, exerciseId, exerciseName
   const [remaining, setRemaining] = useState(() => remainingFrom(startedAt, seconds));
   const [dismissed, setDismissed] = useState(false);
   const [permission, setPermission] = useState<NotificationPermission | "unsupported">("unsupported");
-  const firedRef = useRef(false);
+  // Only a rest that runs out while this page is open should beep. Reloading
+  // the page after the rest ended, or saving a new default shorter than the
+  // time already elapsed, lands on a finished timer, and announcing it then
+  // would be a false alarm — so a rest that is already over counts as fired.
+  const firedRef = useRef(remainingFrom(startedAt, seconds) <= 0);
 
   // A new set means a new rest: reset rather than carrying the old countdown.
   useEffect(() => {
     setTarget(seconds);
     setDismissed(false);
-    firedRef.current = false;
+    firedRef.current = remainingFrom(startedAt, seconds) <= 0;
   }, [seconds, startedAt]);
 
   useEffect(() => {

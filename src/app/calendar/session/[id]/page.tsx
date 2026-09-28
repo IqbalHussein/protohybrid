@@ -133,13 +133,15 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
           </form>
         )}
 
-        <form action={setSessionStatus} className="self-start">
-          <input type="hidden" name="sessionId" value={id} />
-          <input type="hidden" name="status" value={session.status === "skipped" ? "planned" : "skipped"} />
-          <button className="text-sm text-neutral-500 underline">
-            {session.status === "skipped" ? "Put back on the plan" : "Mark skipped"}
-          </button>
-        </form>
+        {session.status === "completed" ? null : (
+          <form action={setSessionStatus} className="self-start">
+            <input type="hidden" name="sessionId" value={id} />
+            <input type="hidden" name="status" value={session.status === "skipped" ? "planned" : "skipped"} />
+            <button className="text-sm text-neutral-500 underline">
+              {session.status === "skipped" ? "Put back on the plan" : "Mark skipped"}
+            </button>
+          </form>
+        )}
       </section>
 
       <section className="flex flex-col gap-3 border-t border-neutral-100 pt-6">

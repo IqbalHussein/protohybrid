@@ -269,10 +269,18 @@ export async function setSessionStatus(formData: FormData) {
 
   const { data: session } = await supabase
     .from("sessions")
-    .select("planned_date")
+    .select("planned_date, type, status")
     .eq("id", sessionId)
     .maybeSingle();
   if (!session) throw new Error("Session not found");
+
+  // A completed session has logged history behind it, and history, charts and
+  // conflict checks all read status = 'completed'. Skipping one would hide its
+  // sets with no way back, and reopening a lift would do the same; a run can
+  // be reopened because completing it again is just the run form.
+  if (session.status === "completed" && (status === "skipped" || session.type === "lift")) {
+    throw new Error("A completed session can't be skipped or reopened");
+  }
 
   const { error } = await supabase.from("sessions").update({ status }).eq("id", sessionId);
   if (error) throw new Error(`Could not update session: ${error.message}`);

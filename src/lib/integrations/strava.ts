@@ -18,8 +18,13 @@ const RUN_SPORTS = new Set(["Run", "TrailRun", "VirtualRun"]);
 
 /** How far back a first sync reaches. */
 const FIRST_SYNC_DAYS = 30;
-/** Later syncs re-read a few days, so edits made on Strava after a run (title, workout type) come through. */
-const RESYNC_OVERLAP_DAYS = 3;
+/**
+ * How far before the last sync later syncs reach back. Strava's `after`
+ * filters on when an activity started, not when it was uploaded, so a watch
+ * synced to Strava days after the run needs this margin to be picked up; it
+ * also lets edits made on Strava (title, workout type) come through.
+ */
+const RESYNC_OVERLAP_DAYS = 14;
 
 export function stravaConfigured(): boolean {
   return Boolean(process.env.STRAVA_CLIENT_ID && process.env.STRAVA_CLIENT_SECRET);

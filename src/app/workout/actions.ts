@@ -6,7 +6,7 @@ import { requireUser } from "@/lib/auth";
 import { optionalNumber, requiredString } from "@/lib/forms";
 import { findOrCreatePlanForDate } from "@/lib/plans";
 import { todayInZone } from "@/lib/time";
-import { getWorkout, getRestPreferences } from "@/lib/lift/queries";
+import { getCompletedSets, getWorkout, getRestPreferences } from "@/lib/lift/queries";
 import { findPrs, type PrCandidate, type PrSet } from "@/lib/lift/prs";
 import { routineTargetsFromSets } from "@/lib/lift/routines";
 import { shouldStartRest, type GroupedExercise } from "@/lib/lift/supersets";
@@ -316,11 +316,24 @@ export async function ungroupSuperset(formData: FormData) {
 }
 
 /**
- * PR detection, run on finish. Loads this session's sets and every prior set
- * for the same exercises, then defers the rules to `findPrs`.
+ * PR detection, run on finish. Loads this session's sets and every earlier
+ * completed set for the same exercises, then defers the rules to `findPrs`.
+ *
+ * Idempotent: a double-clicked Finish (or a finished workout being finished
+ * again) replaces this session's records instead of adding a second copy.
  */
 async function detectPrs(sessionId: string) {
   const { supabase, user } = await requireUser();
+
+  const { error: clearError } = await supabase.from("personal_records").delete().eq("session_id", sessionId);
+  if (clearError) throw new Error(`Could not save PRs: ${clearError.message}`);
+
+  const { data: session } = await supabase
+    .from("sessions")
+    .select("planned_date")
+    .eq("id", sessionId)
+    .maybeSingle();
+  if (!session) throw new Error("Workout not found");
 
   const { data: sets } = await supabase
     .from("lift_sets")
@@ -339,13 +352,16 @@ async function detectPrs(sessionId: string) {
   });
   if (!current.length) return;
 
-  const { data: prior } = await supabase
-    .from("lift_sets")
-    .select("exercise_id, weight, reps, set_type")
-    .in("exercise_id", [...new Set(current.map((s) => s.exercise_id))])
-    .neq("lift_details_id", sessionId);
+  // Only finished workouts on or before this one count as "prior": an
+  // abandoned workout or a later-dated one can't take this session's record
+  // away from it.
+  const prior: PrSet[] = await getCompletedSets(supabase, {
+    exerciseIds: [...new Set(current.map((s) => s.exercise_id))],
+    excludeSessionId: sessionId,
+    onOrBefore: session.planned_date as string,
+  });
 
-  const hits = findPrs(current, (prior ?? []) as PrSet[]);
+  const hits = findPrs(current, prior);
   if (!hits.length) return;
 
   const { error } = await supabase.from("personal_records").insert(
