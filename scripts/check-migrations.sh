@@ -28,10 +28,23 @@ cleanup
 echo "Starting $IMAGE..."
 docker run -d --name "$CONTAINER" -e POSTGRES_PASSWORD=pw -e POSTGRES_DB="$DB" "$IMAGE" >/dev/null
 
+# The image first runs a temporary server for initialisation, listening on the
+# Unix socket only, then shuts it down and starts the real one. Waiting on the
+# socket can catch the temporary server just before it stops; only the real
+# server listens on TCP, so wait for that.
+ready=
 for _ in $(seq 1 60); do
-  docker exec "$CONTAINER" pg_isready -U postgres -d "$DB" >/dev/null 2>&1 && break
+  if docker exec "$CONTAINER" pg_isready -h 127.0.0.1 -U postgres -d "$DB" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
   sleep 1
 done
+if [ -z "$ready" ]; then
+  echo "Postgres did not become ready in 60s." >&2
+  docker logs "$CONTAINER" >&2 || true
+  exit 1
+fi
 
 docker cp "$ROOT/supabase/migrations" "$CONTAINER:/tmp/migrations" >/dev/null
 docker cp "$ROOT/supabase/tests" "$CONTAINER:/tmp/tests" >/dev/null
