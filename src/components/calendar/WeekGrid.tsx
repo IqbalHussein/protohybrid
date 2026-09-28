@@ -291,8 +291,7 @@ function SessionCard({
 
       {session.subtitle ? <span className="block truncate opacity-70">{session.subtitle}</span> : null}
 
-      {/* The conflict-warning surface. findConflicts returns nothing until the
-          rule engine lands, so this renders only once it does. */}
+      {/* The card half of the conflict surface (see src/lib/calendar/conflicts.ts). */}
       {session.conflicts.map((message) => (
         <span key={message} className="mt-0.5 block truncate rounded bg-amber-100 px-1 text-amber-900">
           {message}

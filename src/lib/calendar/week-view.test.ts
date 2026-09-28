@@ -15,6 +15,7 @@ function session(over: Partial<CalendarSession> = {}): CalendarSession {
     startMin: null,
     durationMin: null,
     routineId: null,
+    adHoc: false,
     run: null,
     lift: { focus: "push", notes: null, started_at: null, completed_at: null },
     ...over,
@@ -218,10 +219,22 @@ describe("buildWeekView", () => {
     expect(card.subtitle).toBeNull();
   });
 
-  it("reserves the conflict surface without populating it", () => {
+  it("draws no warnings when there are no conflicts", () => {
     const view = buildWeekView(week({ sessions: [session()] }), { now: NOW });
     expect(view.warnings).toEqual([]);
     expect(view.days.find((d) => d.date === "2026-09-16")!.untimed[0].conflicts).toEqual([]);
+  });
+
+  it("puts a conflict on its card and in the week summary, and drops ones from outside the week", () => {
+    const view = buildWeekView(week({ sessions: [session()] }), {
+      now: NOW,
+      conflicts: [
+        { key: "a", ruleId: "r", message: "Too close", sessionIds: ["s1", "last-week"] },
+        { key: "b", ruleId: "r", message: "Not this week", sessionIds: ["last-week"] },
+      ],
+    });
+    expect(view.warnings).toEqual(["Too close"]);
+    expect(view.days.find((d) => d.date === "2026-09-16")!.untimed[0].conflicts).toEqual(["Too close"]);
   });
 });
 
@@ -235,6 +248,9 @@ function runDetails(over: Partial<NonNullable<CalendarSession["run"]>> = {}) {
     actual_pace_sec_per_km: null,
     actual_duration_sec: null,
     strava_activity_id: null,
+    actual_avg_hr: null,
+    actual_elevation_m: null,
+    strava_name: null,
     ...over,
   };
 }

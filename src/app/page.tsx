@@ -42,7 +42,7 @@ export default async function Home() {
         </form>
       )}
 
-      <nav className="grid grid-cols-3 gap-2">
+      <nav className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Link href="/calendar" className="rounded border border-neutral-300 px-4 py-3 text-center">
           Week
         </Link>
@@ -51,6 +51,9 @@ export default async function Home() {
         </Link>
         <Link href="/history" className="rounded border border-neutral-300 px-4 py-3 text-center">
           History
+        </Link>
+        <Link href="/settings" className="rounded border border-neutral-300 px-4 py-3 text-center">
+          Settings
         </Link>
       </nav>
 

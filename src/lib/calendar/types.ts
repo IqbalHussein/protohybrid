@@ -11,6 +11,9 @@ export type RunDetails = {
   actual_pace_sec_per_km: number | null;
   actual_duration_sec: number | null;
   strava_activity_id: string | null;
+  actual_avg_hr: number | null;
+  actual_elevation_m: number | null;
+  strava_name: string | null;
 };
 
 export type LiftDetails = {
@@ -30,6 +33,8 @@ export type CalendarSession = {
   startMin: number | null;
   durationMin: number | null;
   routineId: string | null;
+  /** Started from the logger or imported unplanned from Strava; never conflict-checked. */
+  adHoc: boolean;
   run: RunDetails | null;
   lift: LiftDetails | null;
 };

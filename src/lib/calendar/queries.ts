@@ -4,10 +4,10 @@ import { addDays, weekDates } from "@/lib/week";
 import type { BusyBlock, CalendarSession, LiftDetails, RunDetails, Week } from "./types";
 
 const SESSION_COLUMNS =
-  "id, type, status, planned_date, planned_start_time, planned_duration_min, routine_id";
+  "id, type, status, planned_date, planned_start_time, planned_duration_min, routine_id, ad_hoc";
 
 const RUN_COLUMNS =
-  "run_type, target_distance_km, target_pace_sec_per_km, target_duration_sec, actual_distance_km, actual_pace_sec_per_km, actual_duration_sec, strava_activity_id";
+  "run_type, target_distance_km, target_pace_sec_per_km, target_duration_sec, actual_distance_km, actual_pace_sec_per_km, actual_duration_sec, strava_activity_id, actual_avg_hr, actual_elevation_m, strava_name";
 
 const LIFT_COLUMNS = "focus, notes, started_at, completed_at";
 
@@ -36,6 +36,7 @@ function toSession(row: Record<string, unknown>): CalendarSession {
     startMin: timeStringToMinutes(row.planned_start_time as string | null),
     durationMin: (row.planned_duration_min as number | null) ?? null,
     routineId: (row.routine_id as string | null) ?? null,
+    adHoc: Boolean(row.ad_hoc),
     run: type === "run" ? one(row.run_details as RunDetails | RunDetails[] | null) : null,
     lift: type === "lift" ? one(row.lift_details as LiftDetails | LiftDetails[] | null) : null,
   };
@@ -87,6 +88,23 @@ export async function getWeek(weekStart: string): Promise<Week> {
       source: b.source as BusyBlock["source"],
     })),
   };
+}
+
+/**
+ * Sessions dated in [from, to), for conflict checks that reach past the
+ * week's edges. Read-only, like the grid.
+ */
+export async function getSessionsBetween(from: string, to: string): Promise<CalendarSession[]> {
+  const { supabase } = await requireUser();
+
+  const { data } = await supabase
+    .from("sessions")
+    .select(`${SESSION_COLUMNS}, run_details(${RUN_COLUMNS}), lift_details(${LIFT_COLUMNS})`)
+    .gte("planned_date", from)
+    .lt("planned_date", to)
+    .order("planned_date");
+
+  return (data ?? []).map((s) => toSession(s as Record<string, unknown>));
 }
 
 export async function getSession(sessionId: string): Promise<CalendarSession | null> {

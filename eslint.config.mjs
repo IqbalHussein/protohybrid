@@ -13,8 +13,7 @@ const eslintConfig = [
   {
     rules: {
       // An underscore marks a parameter that is part of a signature on
-      // purpose but not used yet — findConflicts reserves the conflict-rule
-      // arguments this way.
+      // purpose but not used.
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
   },

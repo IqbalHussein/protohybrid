@@ -34,6 +34,8 @@ async function createWorkout(focus: string, routineId: string | null): Promise<s
       planned_date: today,
       status: "planned",
       routine_id: routineId,
+      // Not on the calendar ahead of time, so conflict rules leave it alone.
+      ad_hoc: true,
     })
     .select("id")
     .single();

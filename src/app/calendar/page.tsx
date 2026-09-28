@@ -1,6 +1,8 @@
 import Link from "next/link";
 import WeekGrid from "@/components/calendar/WeekGrid";
-import { getLoggedSetCounts, getWeek } from "@/lib/calendar/queries";
+import { conflictWindow, findConflicts } from "@/lib/calendar/conflicts";
+import { getLoggedSetCounts, getSessionsBetween, getWeek } from "@/lib/calendar/queries";
+import { getConflictRules } from "@/lib/calendar/rules";
 import { buildWeekView } from "@/lib/calendar/week-view";
 import { addWeeks, currentWeekStart, formatWeekRange, mondayOf } from "@/lib/week";
 import { todayInZone } from "@/lib/time";
@@ -23,21 +25,31 @@ export default async function CalendarPage({
   // lands on a real week rather than a seven-day window starting mid-week.
   const weekStart = week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? mondayOf(week) : currentWeekStart();
 
-  const data = await getWeek(weekStart);
+  const [data, rules] = await Promise.all([getWeek(weekStart), getConflictRules()]);
 
   const liftIds = data.sessions.filter((s) => s.type === "lift").map((s) => s.id);
-  const setCounts = await getLoggedSetCounts(liftIds);
+  const reach = conflictWindow(weekStart, rules);
+  const [setCounts, nearby] = await Promise.all([
+    getLoggedSetCounts(liftIds),
+    getSessionsBetween(reach.from, reach.to),
+  ]);
 
-  const view = buildWeekView(data, { setCounts });
+  const conflicts = findConflicts(nearby, data.busyBlocks, rules);
+  const view = buildWeekView(data, { setCounts, conflicts });
   const today = todayInZone();
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <h1 className="text-xl font-semibold">Week</h1>
-        <Link href="/" className="text-sm text-neutral-500 underline">
-          Home
-        </Link>
+        <span className="flex gap-3 text-sm text-neutral-500">
+          <Link href="/settings" className="underline">
+            Rules &amp; sync
+          </Link>
+          <Link href="/" className="underline">
+            Home
+          </Link>
+        </span>
       </header>
 
       <nav className="flex flex-wrap items-center gap-2">
@@ -86,8 +98,8 @@ export default async function CalendarPage({
         </span>
       </nav>
 
-      {/* The week-level half of the conflict surface. Empty until the rule
-          engine lands (MVP #5); the spec reserves the spot, not the rules. */}
+      {/* The week-level half of the conflict surface; the rules are edited in
+          Settings. */}
       {view.warnings.length ? (
         <ul className="rounded border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
           {view.warnings.map((warning) => (

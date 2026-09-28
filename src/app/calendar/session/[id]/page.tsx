@@ -76,12 +76,22 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
           )
         ) : done ? (
           <div className="rounded border border-neutral-200 px-4 py-3 text-sm">
-            <p className="font-medium">Completed</p>
+            <p className="font-medium">
+              Completed
+              {session.run?.strava_activity_id ? (
+                <span className="font-normal text-neutral-500">
+                  {" "}
+                  · from Strava{session.run.strava_name ? `: ${session.run.strava_name}` : ""}
+                </span>
+              ) : null}
+            </p>
             <p className="mt-1 tabular-nums text-neutral-600">
               {[
                 formatDistance(session.run?.actual_distance_km ?? null),
                 formatRunDuration(session.run?.actual_duration_sec ?? null),
                 formatPace(session.run?.actual_pace_sec_per_km ?? null),
+                session.run?.actual_avg_hr ? `${Math.round(session.run.actual_avg_hr)} bpm` : null,
+                session.run?.actual_elevation_m ? `${Math.round(session.run.actual_elevation_m)} m climb` : null,
               ]
                 .filter(Boolean)
                 .join(" · ") || "No distance or duration recorded."}
@@ -114,11 +124,11 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
               />
             </label>
             <button className="rounded bg-neutral-900 px-4 py-2.5 text-white">Mark complete</button>
-            {/* Strava will fill these columns automatically later; until then
-                the UI must not imply the numbers arrived on their own. */}
+            {/* The same columns Strava sync fills; the UI must not imply
+                hand-entered numbers arrived on their own. */}
             <span className="w-full text-xs text-neutral-400">
-              Entered by hand for now — pace is worked out from the two. Strava sync will fill these
-              in automatically once it lands.
+              Entered by hand — pace is worked out from the two. With Strava connected in Settings, a
+              synced run on this day fills these in instead.
             </span>
           </form>
         )}

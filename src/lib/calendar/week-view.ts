@@ -1,7 +1,7 @@
 import { minutesIntoDay, zonedDateString } from "@/lib/time";
 import { formatDayHeading, isPast, isToday } from "@/lib/week";
 import type { SessionStatus, SessionType } from "@/lib/types";
-import { conflictsFor, findConflicts } from "./conflicts";
+import { conflictsFor, type Conflict } from "./conflicts";
 import {
   assignLanes,
   gridWindow,
@@ -69,18 +69,22 @@ export type WeekView = {
   window: Span;
   hourMarks: number[];
   days: DayView[];
-  /** The week-level conflict summary line; empty until the rule engine lands. */
+  /** The week-level conflict summary, one line per conflict touching this week. */
   warnings: string[];
 };
 
 export function buildWeekView(
   week: Week,
-  options: { setCounts?: Map<string, number>; now?: Date } = {},
+  options: { setCounts?: Map<string, number>; now?: Date; conflicts?: Conflict[] } = {},
 ): WeekView {
   const now = options.now ?? new Date();
   const setCounts = options.setCounts ?? new Map<string, number>();
 
-  const conflicts = findConflicts(week.sessions, week.busyBlocks);
+  // Conflicts are found over a window wider than the week (a rest-day streak
+  // can start the week before), so only the ones touching a session drawn
+  // here belong on this page.
+  const inWeek = new Set(week.sessions.map((s) => s.id));
+  const conflicts = (options.conflicts ?? []).filter((c) => c.sessionIds.some((id) => inWeek.has(id)));
 
   // Busy blocks are instants; convert once, here, and clip anything crossing
   // midnight into per-day pieces so a night shift darkens both mornings.
@@ -147,7 +151,7 @@ export function buildWeekView(
     window,
     hourMarks: hourMarks(window),
     days,
-    warnings: [],
+    warnings: [...new Set(conflicts.map((c) => c.message))],
   };
 }
 
@@ -160,7 +164,7 @@ function sessionSpan(session: CalendarSession): Span {
 function toView(
   session: CalendarSession,
   setCounts: Map<string, number>,
-  conflicts: ReturnType<typeof findConflicts>,
+  conflicts: Conflict[],
   now: Date,
 ): SessionView {
   return {

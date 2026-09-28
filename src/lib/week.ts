@@ -52,6 +52,12 @@ export function addDays(date: string, days: number): string {
   return toDateString(d);
 }
 
+/** Whole days from `a` to `b`; negative when `b` is earlier. */
+export function daysBetween(a: string, b: string): number {
+  // Rounded because a DST change makes one "day" 23 or 25 hours long.
+  return Math.round((parseDateString(b).getTime() - parseDateString(a).getTime()) / 86_400_000);
+}
+
 export function addWeeks(date: string, weeks: number): string {
   return addDays(date, weeks * DAYS_IN_WEEK);
 }

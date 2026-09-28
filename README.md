@@ -8,7 +8,7 @@ Next.js (App Router, TypeScript, Tailwind) + Supabase (Postgres, auth-ready).
 
 ## Getting started
 
-This scaffold was hand-written (no `node_modules`, no lockfile yet) — install dependencies before running anything:
+Install dependencies:
 
 ```bash
 npm install
@@ -21,8 +21,8 @@ cp .env.local.example .env.local
 ```
 
 - `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from your Supabase project's Settings > API
-- `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` — not needed until Strava sync (Next Steps #5)
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — you already have the Google Cloud project; add these when wiring up Calendar sync (Next Steps #6)
+- `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` — optional; without them Settings says Strava isn't set up. See [Integrations](#integrations)
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` — optional, likewise
 
 Apply the migrations in `supabase/migrations/` **in filename order** via the Supabase CLI or by pasting each into the SQL editor in your Supabase project dashboard:
 
@@ -34,6 +34,7 @@ Apply the migrations in `supabase/migrations/` **in filename order** via the Sup
 | `0004_workout_timing.sql` | Workout start/finish timestamps and set ordering |
 | `0005_rest_preferences.sql` | Per-exercise rest-timer overrides |
 | `0006_weekly_calendar.sql` | Session start time and duration, busy-block timestamps |
+| `0007_conflicts_and_sync.sql` | Ad-hoc flag on sessions, Strava fields on runs, per-user Google event ids, conflict-rule columns, `user_settings`, `oauth_connections` |
 
 Run the test suite (the training rules — volume, PRs, week math, grid layout — are covered without needing a database):
 
@@ -57,15 +58,29 @@ npm run dev
 
 ## Project status
 
-Done — Next Steps #1–#4 in `project-spec.md`:
+Done — Next Steps #1–#7 in `project-spec.md`, i.e. the whole v1 MVP:
 
 - **Scaffold and schema** (#1–#2)
 - **Lift logger** (#3, `specs/lift-logger.md`) — exercise library and custom exercises, set logging with previous-performance reference, rest timer, supersets, PR detection, history, per-exercise and per-routine progress charts, routines
 - **Weekly calendar** (#4, `specs/weekly-calendar.md`) — week grid with busy blocks, create/edit/delete runs and lifts, reschedule by drag or by form, mark complete/skipped, manual run actuals, and the start-planned-lift handoff into the logger
 
-Remaining: Strava sync (#5), Google Calendar sync (#6), and the conflict-rule engine (#7). The calendar reserves where conflict warnings render — `src/lib/calendar/conflicts.ts` is the call site, and it returns nothing until the rules exist.
+- **Strava sync** (#5) — a synced run completes the run planned that day (preferring a matching run type) and fills in distance, pace, heart rate and elevation; an unplanned run is filed as an ad-hoc session. Re-syncing is idempotent
+- **Google Calendar sync** (#6) — timed, busy events from the calendars ticked in Google become read-only busy blocks; all-day, "free" and declined events are skipped, and events deleted in Google are removed
+- **Conflict rules** (#7) — `src/lib/calendar/conflicts.ts`, a pure engine with four rule types (minimum hours between two kinds of session, no hard sessions back to back, rest-day frequency, overlap with a commitment). Four defaults are seeded once per user and every threshold is editable in Settings. Ad-hoc and skipped sessions are never flagged
+
+Sync runs when you connect and from **Sync now** in Settings. There's no background sync yet.
 
 **Time zone:** v1 is single-user, so the app's zone is one constant, `APP_TIME_ZONE` in `src/lib/time.ts`. Phase 2 swaps it for a user column in that one place.
+
+## Integrations
+
+Both are optional and read-only. Tokens are stored in `oauth_connections`, scoped by RLS.
+
+**Strava:** create an app at <https://www.strava.com/settings/api>. Set its *Authorization Callback Domain* to your app's host (`localhost` for development), then set `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET`. The first sync reaches back 30 days; later ones re-read the 3 days before the last sync so edits made on Strava come through.
+
+**Google Calendar:** in your Google Cloud project, enable the Calendar API, configure the OAuth consent screen with the `calendar.readonly` scope (add yourself as a test user while the app is in testing), and create an OAuth client of type *Web application* with `http://localhost:3000/api/auth/google/callback` (and your production URL) as an authorized redirect URI. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI`. Sync covers last week through five weeks ahead.
+
+Then connect each one from **Settings**.
 
 ## Structure
 
@@ -75,7 +90,8 @@ src/components/      Shared UI; the only client components are the rest
                      timer, the charts and the calendar grid
 src/lib/             Pure rules and queries, with co-located *.test.ts
 src/lib/lift/        Lift logger: volume, PRs, supersets, routines, charts
-src/lib/calendar/    Week grid: layout geometry, run maths, view model
+src/lib/calendar/    Week grid: layout geometry, run maths, view model, conflict rules
+src/lib/integrations/ Strava and Google Calendar OAuth and sync
 src/lib/supabase/    Supabase client (browser) and server client helpers
 supabase/migrations/ SQL schema, applied in filename order
 project-spec.md      Full project spec
