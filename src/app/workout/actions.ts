@@ -6,11 +6,23 @@ import { requireUser } from "@/lib/auth";
 import { optionalNumber, requiredString } from "@/lib/forms";
 import { findOrCreatePlanForDate } from "@/lib/plans";
 import { todayInZone } from "@/lib/time";
-import { getCompletedSets, getWorkout, getRestPreferences } from "@/lib/lift/queries";
-import { findPrs, type PrCandidate, type PrSet } from "@/lib/lift/prs";
+import { getWorkout, getRestPreferences } from "@/lib/lift/queries";
+import { exercisesInSession, isCompleted, rebuildPrs } from "@/lib/lift/records";
 import { routineTargetsFromSets } from "@/lib/lift/routines";
 import { shouldStartRest, type GroupedExercise } from "@/lib/lift/supersets";
 import { DEFAULT_REST_SECONDS, type SetType } from "@/lib/lift/types";
+
+/**
+ * A finished workout stays editable, and editing it changes history: rebuild
+ * the touched exercises' records. Sets in a workout still in progress don't
+ * count yet — finishing it does the rebuild.
+ */
+async function refreshRecordsIfLogged(sessionId: string, exerciseIds: string[]) {
+  const { supabase, user } = await requireUser();
+  if (exerciseIds.length && (await isCompleted(supabase, sessionId))) {
+    await rebuildPrs(supabase, user.id, exerciseIds);
+  }
+}
 
 /**
  * Create today's session plus its lift_details and open the logging screen.
@@ -107,6 +119,7 @@ export async function addSet(formData: FormData) {
   });
 
   if (error) throw new Error(`Could not log set: ${error.message}`);
+  await refreshRecordsIfLogged(sessionId, [exerciseId]);
   revalidatePath(`/workout/${sessionId}`);
 
   const workout = await getWorkout(sessionId);
@@ -130,7 +143,7 @@ export async function updateSet(formData: FormData) {
   const sessionId = requiredString(formData, "sessionId");
   const setId = requiredString(formData, "setId");
 
-  const { error } = await supabase
+  const { data: updated, error } = await supabase
     .from("lift_sets")
     .update({
       weight: optionalNumber(formData, "weight"),
@@ -138,9 +151,11 @@ export async function updateSet(formData: FormData) {
       rpe: optionalNumber(formData, "rpe"),
       set_type: String(formData.get("setType") || "working") as SetType,
     })
-    .eq("id", setId);
+    .eq("id", setId)
+    .select("exercise_id");
 
   if (error) throw new Error(`Could not update set: ${error.message}`);
+  await refreshRecordsIfLogged(sessionId, (updated ?? []).map((s) => s.exercise_id as string));
   revalidatePath(`/workout/${sessionId}`);
 }
 
@@ -178,18 +193,28 @@ export async function deleteSet(formData: FormData) {
         .filter((s) => s.next !== s.current)
         .map((s) => supabase.from("lift_sets").update({ set_number: s.next }).eq("id", s.id)),
     );
+    await refreshRecordsIfLogged(sessionId, [target.exercise_id as string]);
   }
 
   revalidatePath(`/workout/${sessionId}`);
 }
 
-/** Delete a whole workout. sessions cascades to lift_details, lift_sets and personal_records. */
+/**
+ * Delete a whole workout. sessions cascades to lift_details, lift_sets and the
+ * records this session held — and a record it held may have been standing in
+ * the way of a later one, so its exercises are rebuilt afterwards.
+ */
 export async function deleteWorkout(formData: FormData) {
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
   const sessionId = requiredString(formData, "sessionId");
+
+  const exerciseIds = await exercisesInSession(supabase, sessionId);
+  const wasLogged = await isCompleted(supabase, sessionId);
 
   const { error } = await supabase.from("sessions").delete().eq("id", sessionId);
   if (error) throw new Error(`Could not delete workout: ${error.message}`);
+
+  if (wasLogged) await rebuildPrs(supabase, user.id, exerciseIds);
 
   revalidatePath("/");
   revalidatePath("/history");
@@ -315,74 +340,9 @@ export async function ungroupSuperset(formData: FormData) {
   revalidatePath(`/workout/${sessionId}`);
 }
 
-/**
- * PR detection, run on finish. Loads this session's sets and every earlier
- * completed set for the same exercises, then defers the rules to `findPrs`.
- *
- * Idempotent: a double-clicked Finish (or a finished workout being finished
- * again) replaces this session's records instead of adding a second copy.
- */
-async function detectPrs(sessionId: string) {
-  const { supabase, user } = await requireUser();
-
-  const { error: clearError } = await supabase.from("personal_records").delete().eq("session_id", sessionId);
-  if (clearError) throw new Error(`Could not save PRs: ${clearError.message}`);
-
-  const { data: session } = await supabase
-    .from("sessions")
-    .select("planned_date")
-    .eq("id", sessionId)
-    .maybeSingle();
-  if (!session) throw new Error("Workout not found");
-
-  const { data: sets } = await supabase
-    .from("lift_sets")
-    .select("exercise_id, weight, reps, set_type, exercises(name)")
-    .eq("lift_details_id", sessionId);
-
-  const current: PrCandidate[] = (sets ?? []).map((s) => {
-    const exercise = Array.isArray(s.exercises) ? s.exercises[0] : s.exercises;
-    return {
-      exercise_id: s.exercise_id,
-      exercise_name: (exercise as { name?: string } | null)?.name ?? "Exercise",
-      weight: s.weight,
-      reps: s.reps,
-      set_type: s.set_type as SetType,
-    };
-  });
-  if (!current.length) return;
-
-  // Only finished workouts on or before this one count as "prior": an
-  // abandoned workout or a later-dated one can't take this session's record
-  // away from it.
-  const prior: PrSet[] = await getCompletedSets(supabase, {
-    exerciseIds: [...new Set(current.map((s) => s.exercise_id))],
-    excludeSessionId: sessionId,
-    onOrBefore: session.planned_date as string,
-  });
-
-  const hits = findPrs(current, prior);
-  if (!hits.length) return;
-
-  const { error } = await supabase.from("personal_records").insert(
-    hits.map((h) => ({
-      user_id: user.id,
-      exercise_id: h.exercise_id,
-      record_type: h.record_type,
-      value: h.value,
-      weight: h.weight,
-      reps: h.reps,
-      session_id: sessionId,
-    })),
-  );
-  if (error) throw new Error(`Could not save PRs: ${error.message}`);
-}
-
 export async function finishWorkout(formData: FormData) {
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
   const sessionId = requiredString(formData, "sessionId");
-
-  await detectPrs(sessionId);
 
   const { error: detailsError } = await supabase
     .from("lift_details")
@@ -395,6 +355,10 @@ export async function finishWorkout(formData: FormData) {
     .update({ status: "completed" })
     .eq("id", sessionId);
   if (error) throw new Error(`Could not finish workout: ${error.message}`);
+
+  // Records are recomputed once the session counts as history, so finishing a
+  // workout logged for an earlier date also corrects the records after it.
+  await rebuildPrs(supabase, user.id, await exercisesInSession(supabase, sessionId));
 
   // A lift completes by being logged, which is how the calendar learns it
   // happened (weekly-calendar spec flow #4).

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireUser, type UserClient } from "@/lib/auth";
 import { optionalNumber, optionalString, requiredString } from "@/lib/forms";
+import { exercisesInSession, rebuildPrs } from "@/lib/lift/records";
 import { findOrCreatePlanForDate } from "@/lib/plans";
 import { minutesToTimeString, zonedToUtc } from "@/lib/time";
 import { addDays, mondayOf } from "@/lib/week";
@@ -194,7 +195,7 @@ async function moveSession(
 
   const { data: current } = await supabase
     .from("sessions")
-    .select("planned_date, plan_id")
+    .select("planned_date, plan_id, type, status")
     .eq("id", sessionId)
     .maybeSingle();
   if (!current) throw new Error("Session not found");
@@ -208,6 +209,12 @@ async function moveSession(
 
   const { error } = await supabase.from("sessions").update(patch).eq("id", sessionId);
   if (error) throw new Error(`Could not move session: ${error.message}`);
+
+  // Records are ordered by date, so moving a logged workout can change which
+  // session holds each one.
+  if (current.type === "lift" && current.status === "completed" && current.planned_date !== date) {
+    await rebuildPrs(supabase, user.id, await exercisesInSession(supabase, sessionId));
+  }
 
   return { previousDate: current.planned_date as string };
 }
