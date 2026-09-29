@@ -13,6 +13,8 @@ export type HistorySet = {
   reps: number | null;
   set_type: SetType;
   session_date: string;
+  /** When the session's workout was finished, where the query asked for it. */
+  completed_at?: string | null;
 };
 
 export type SessionStat = {

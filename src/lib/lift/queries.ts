@@ -285,7 +285,7 @@ export async function getCompletedSets(supabase: UserClient, scope: SetScope): P
     let query = supabase
       .from("lift_sets")
       .select(
-        "id, lift_details_id, exercise_id, weight, reps, set_type, lift_details!inner(sessions!inner(planned_date))",
+        "id, lift_details_id, exercise_id, weight, reps, set_type, lift_details!inner(completed_at, sessions!inner(planned_date))",
       )
       .eq("lift_details.sessions.status", "completed");
     if (scope.exerciseIds) query = query.in("exercise_id", scope.exerciseIds);
@@ -301,10 +301,8 @@ export async function getCompletedSets(supabase: UserClient, scope: SetScope): P
   }
 
   return rows.flatMap((r) => {
-    const session = one(one(r.lift_details as { sessions: unknown } | null)?.sessions as
-      | { planned_date: string }
-      | { planned_date: string }[]
-      | null);
+    const details = one(r.lift_details as { completed_at: string | null; sessions: unknown } | null);
+    const session = one(details?.sessions as { planned_date: string } | { planned_date: string }[] | null);
     if (!session) return [];
     return [
       {
@@ -314,6 +312,7 @@ export async function getCompletedSets(supabase: UserClient, scope: SetScope): P
         reps: r.reps as number | null,
         set_type: r.set_type as HistorySet["set_type"],
         session_date: session.planned_date,
+        completed_at: details?.completed_at ?? null,
       },
     ];
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findPrs, type PrCandidate, type PrSet } from "./prs";
+import { findPrs, replayPrs, type PrCandidate, type PrSet } from "./prs";
 import type { PrRecordType } from "./types";
 
 const bench = (weight: number | null, reps: number | null, set_type: PrSet["set_type"] = "working") => ({
@@ -81,5 +81,48 @@ describe("findPrs", () => {
     // against 262.5 — the records are genuinely independent.
     const prior: PrSet[] = [{ exercise_id: "bench", weight: 225, reps: 5, set_type: "working" }];
     expect(types(findPrs([bench(185, 12)], prior))).toEqual(["best_volume"]);
+  });
+});
+
+describe("replayPrs", () => {
+  const session = (sessionId: string, date: string, weight: number, completedAt: string | null = null) => ({
+    sessionId,
+    date,
+    completedAt,
+    sets: [bench(weight, 5)],
+  });
+  const heaviest = (results: ReturnType<typeof replayPrs>) =>
+    results.flatMap((r) =>
+      r.hits.filter((h) => h.record_type === "heaviest_weight").map((h) => `${r.sessionId}:${h.value}`),
+    );
+
+  it("walks history by date, whatever order the rows arrive in", () => {
+    const results = replayPrs([session("c", "2026-09-20", 110), session("a", "2026-09-01", 100), session("b", "2026-09-10", 120)]);
+    // c is lighter than b, so only a and b ever held the heaviest-weight record.
+    expect(heaviest(results)).toEqual(["a:100", "b:120"]);
+  });
+
+  it("hands a record to the next session once the one holding it is gone", () => {
+    const history = [session("a", "2026-09-01", 100), session("b", "2026-09-10", 120), session("c", "2026-09-20", 110)];
+    expect(heaviest(replayPrs(history))).toEqual(["a:100", "b:120"]);
+    // Deleting b: c's 110 now beats everything before it.
+    expect(heaviest(replayPrs(history.filter((s) => s.sessionId !== "b")))).toEqual(["a:100", "c:110"]);
+  });
+
+  it("takes a record away from a later session when an earlier one is edited up", () => {
+    const history = [session("a", "2026-09-01", 130), session("b", "2026-09-10", 120)];
+    expect(heaviest(replayPrs(history))).toEqual(["a:130"]);
+  });
+
+  it("orders two sessions on the same date by when they were finished", () => {
+    const results = replayPrs([
+      session("pm", "2026-09-10", 120, "2026-09-10T22:00:00Z"),
+      session("am", "2026-09-10", 100, "2026-09-10T12:00:00Z"),
+    ]);
+    expect(heaviest(results)).toEqual(["am:100", "pm:120"]);
+  });
+
+  it("returns nothing for an empty history", () => {
+    expect(replayPrs([])).toEqual([]);
   });
 });

@@ -98,3 +98,43 @@ export function findPrs(current: PrCandidate[], prior: PrSet[]): PrHit[] {
 
   return hits;
 }
+
+/** One completed session's sets, as `replayPrs` walks them. */
+export type ReplaySession = {
+  sessionId: string;
+  /** The session's calendar date, YYYY-MM-DD — the primary order. */
+  date: string;
+  /** When the workout was finished; orders two sessions on the same date. */
+  completedAt: string | null;
+  sets: PrCandidate[];
+};
+
+export type ReplayResult = { sessionId: string; hits: PrHit[] };
+
+/**
+ * Every record every session set, found by walking history in order and
+ * asking `findPrs` at each step what that session broke.
+ *
+ * Records depend on everything before them, so a record computed once at
+ * finish goes stale the moment an older workout is edited, deleted, or moved
+ * to another date. Replaying from the start is the only way to be right after
+ * any of those, and it keeps one set of rules: this is `findPrs` applied in
+ * sequence, not a second implementation of it.
+ */
+export function replayPrs(sessions: ReplaySession[]): ReplayResult[] {
+  const ordered = [...sessions].sort(
+    (a, b) =>
+      a.date.localeCompare(b.date) ||
+      (a.completedAt ?? "").localeCompare(b.completedAt ?? "") ||
+      a.sessionId.localeCompare(b.sessionId),
+  );
+
+  const prior: PrSet[] = [];
+  const results: ReplayResult[] = [];
+  for (const session of ordered) {
+    const hits = findPrs(session.sets, prior);
+    if (hits.length) results.push({ sessionId: session.sessionId, hits });
+    prior.push(...session.sets);
+  }
+  return results;
+}
