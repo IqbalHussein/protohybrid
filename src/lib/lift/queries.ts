@@ -17,6 +17,28 @@ function one<T>(value: T | T[] | null | undefined): T | null {
   return value ?? null;
 }
 
+/**
+ * Every row of a query, not just the first page. PostgREST caps a response
+ * at its max-rows (1000 on Supabase) without saying so, so any query that can
+ * outgrow that has to page. `page` builds the query for one [from, to] range;
+ * it must be ordered, or pages can overlap. Advancing by what actually came
+ * back means a project with a lower max-rows still reads everything.
+ */
+async function fetchAll<T>(
+  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (let from = 0; ; ) {
+    const { data, error } = await page(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(error.message);
+    if (!data?.length) return rows;
+    rows.push(...data);
+    from += data.length;
+  }
+}
+
+const PAGE_SIZE = 1000;
+
 export type WorkoutExercise = {
   exercise: Exercise;
   sets: LiftSet[];
@@ -208,11 +230,17 @@ export async function getWorkoutHistory(limit = 25): Promise<HistoryWorkout[]> {
   if (!sessions?.length) return [];
   const ids = sessions.map((s) => s.id as string);
 
-  const { data: sets } = await supabase
-    .from("lift_sets")
-    .select(`${SET_COLUMNS}, exercises(id, name)`)
-    .in("lift_details_id", ids)
-    .order("created_at", { ascending: true });
+  // A hundred workouts is easily past the row cap, so this pages; without it
+  // the oldest workouts in the list would silently show no sets.
+  const sets = await fetchAll((from, to) =>
+    supabase
+      .from("lift_sets")
+      .select(`${SET_COLUMNS}, exercises(id, name)`)
+      .in("lift_details_id", ids)
+      .order("created_at", { ascending: true })
+      .order("id")
+      .range(from, to),
+  );
 
   // session id -> exercise name -> sets, preserving first-logged order.
   const bySession = new Map<string, Map<string, { name: string; sets: LiftSet[] }>>();
@@ -237,6 +265,51 @@ export async function getWorkoutHistory(limit = 25): Promise<HistoryWorkout[]> {
       startedAt: details?.started_at ?? null,
       completedAt: details?.completed_at ?? null,
       exercises: [...(bySession.get(s.id)?.values() ?? [])],
+    };
+  });
+}
+
+export type HistoryRun = {
+  sessionId: string;
+  date: string;
+  runType: string;
+  distanceKm: number | null;
+  durationSec: number | null;
+  paceSecPerKm: number | null;
+  stravaName: string | null;
+};
+
+/** Completed runs, newest first, for the history list beside workouts. */
+export async function getRunHistory(limit = 25): Promise<HistoryRun[]> {
+  const { supabase } = await requireUser();
+
+  const { data, error } = await supabase
+    .from("sessions")
+    .select(
+      "id, planned_date, run_details!inner(run_type, actual_distance_km, actual_duration_sec, actual_pace_sec_per_km, strava_name)",
+    )
+    .eq("type", "run")
+    .eq("status", "completed")
+    .order("planned_date", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`Could not load runs: ${error.message}`);
+
+  return (data ?? []).map((s) => {
+    const run = one(s.run_details) as {
+      run_type: string;
+      actual_distance_km: number | null;
+      actual_duration_sec: number | null;
+      actual_pace_sec_per_km: number | null;
+      strava_name: string | null;
+    } | null;
+    return {
+      sessionId: s.id as string,
+      date: s.planned_date as string,
+      runType: run?.run_type ?? "easy",
+      distanceKm: run?.actual_distance_km ?? null,
+      durationSec: run?.actual_duration_sec ?? null,
+      paceSecPerKm: run?.actual_pace_sec_per_km ?? null,
+      stravaName: run?.strava_name ?? null,
     };
   });
 }
@@ -277,11 +350,7 @@ export type SetScope = {
  * detection miss the real best.
  */
 export async function getCompletedSets(supabase: UserClient, scope: SetScope): Promise<HistorySet[]> {
-  const rows: Record<string, unknown>[] = [];
-
-  // Advance by what actually came back rather than a fixed page size, so a
-  // project configured with a lower max-rows still reads everything.
-  for (let from = 0; ; ) {
+  const rows = await fetchAll<Record<string, unknown>>((from, to) => {
     let query = supabase
       .from("lift_sets")
       .select(
@@ -292,13 +361,8 @@ export async function getCompletedSets(supabase: UserClient, scope: SetScope): P
     if (scope.routineId) query = query.eq("lift_details.sessions.routine_id", scope.routineId);
     if (scope.excludeSessionId) query = query.neq("lift_details_id", scope.excludeSessionId);
     if (scope.onOrBefore) query = query.lte("lift_details.sessions.planned_date", scope.onOrBefore);
-
-    const { data, error } = await query.order("id").range(from, from + PAGE_SIZE - 1);
-    if (error) throw new Error(`Could not load sets: ${error.message}`);
-    if (!data?.length) break;
-    rows.push(...(data as Record<string, unknown>[]));
-    from += data.length;
-  }
+    return query.order("id").range(from, to);
+  });
 
   return rows.flatMap((r) => {
     const details = one(r.lift_details as { completed_at: string | null; sessions: unknown } | null);
@@ -318,7 +382,6 @@ export async function getCompletedSets(supabase: UserClient, scope: SetScope): P
   });
 }
 
-const PAGE_SIZE = 1000;
 
 /** Every completed set of one exercise, dated — the input to its progress charts. */
 export async function getExerciseHistory(exerciseId: string): Promise<HistorySet[]> {
