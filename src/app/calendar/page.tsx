@@ -1,10 +1,11 @@
 import Link from "next/link";
 import WeekGrid from "@/components/calendar/WeekGrid";
 import { conflictWindow, findConflicts } from "@/lib/calendar/conflicts";
-import { getLoggedSetCounts, getSessionsBetween, getWeek } from "@/lib/calendar/queries";
+import { describeLoad, weekLoad } from "@/lib/calendar/load";
+import { getLoadSets, getLoggedSetCounts, getSessionsBetween, getWeek } from "@/lib/calendar/queries";
 import { getConflictRules } from "@/lib/calendar/rules";
 import { buildWeekView } from "@/lib/calendar/week-view";
-import { addWeeks, currentWeekStart, formatWeekRange, mondayOf } from "@/lib/week";
+import { addDays, addWeeks, currentWeekStart, formatWeekRange, mondayOf } from "@/lib/week";
 import { todayInZone } from "@/lib/time";
 
 /**
@@ -25,18 +26,33 @@ export default async function CalendarPage({
   // lands on a real week rather than a seven-day window starting mid-week.
   const weekStart = week && /^\d{4}-\d{2}-\d{2}$/.test(week) ? mondayOf(week) : currentWeekStart();
 
-  const [data, rules] = await Promise.all([getWeek(weekStart), getConflictRules()]);
+  const previousWeekStart = addWeeks(weekStart, -1);
+  const [data, previous, rules] = await Promise.all([
+    getWeek(weekStart),
+    getWeek(previousWeekStart),
+    getConflictRules(),
+  ]);
 
-  const liftIds = data.sessions.filter((s) => s.type === "lift").map((s) => s.id);
+  const liftIds = (week: typeof data) => week.sessions.filter((s) => s.type === "lift").map((s) => s.id);
   const reach = conflictWindow(weekStart, rules);
-  const [setCounts, nearby] = await Promise.all([
-    getLoggedSetCounts(liftIds),
+  const [setCounts, nearby, loadSets, previousLoadSets] = await Promise.all([
+    getLoggedSetCounts(liftIds(data)),
     getSessionsBetween(reach.from, reach.to),
+    getLoadSets(liftIds(data)),
+    getLoadSets(liftIds(previous)),
   ]);
 
   const conflicts = findConflicts(nearby, data.busyBlocks, rules);
   const view = buildWeekView(data, { setCounts, conflicts });
   const today = todayInZone();
+
+  // A week in progress is compared with the same stretch of last week, so a
+  // Tuesday doesn't read as a 70% drop against a finished week.
+  const isCurrentWeek = weekStart === currentWeekStart();
+  const load = describeLoad(
+    weekLoad(data.sessions, loadSets),
+    weekLoad(previous.sessions, previousLoadSets, isCurrentWeek ? addDays(today, -7) : undefined),
+  );
 
   return (
     <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-8">
@@ -97,6 +113,27 @@ export default async function CalendarPage({
           </Link>
         </span>
       </nav>
+
+      <section aria-label="Training load" className="grid gap-2 sm:grid-cols-3">
+        {load.map((item) => (
+          <div key={item.label} className="rounded border border-neutral-200 px-3 py-2">
+            <p className="text-xs uppercase tracking-wide text-neutral-400">{item.label}</p>
+            <p className="font-medium tabular-nums">
+              {item.value}
+              {item.change != null ? (
+                <span
+                  className={`ml-2 text-xs ${item.change > 0 ? "text-amber-700" : "text-neutral-500"}`}
+                  title={isCurrentWeek ? "vs the same days last week" : "vs last week"}
+                >
+                  {item.change > 0 ? "+" : ""}
+                  {item.change}%
+                </span>
+              ) : null}
+            </p>
+            {item.detail ? <p className="text-xs text-neutral-500 tabular-nums">{item.detail}</p> : null}
+          </div>
+        ))}
+      </section>
 
       {/* The week-level half of the conflict surface; the rules are edited in
           Settings. */}
