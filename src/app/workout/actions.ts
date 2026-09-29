@@ -222,6 +222,42 @@ export async function deleteWorkout(formData: FormData) {
   redirect("/");
 }
 
+/**
+ * Take an exercise out of a workout, with every set logged for it. If that
+ * leaves a superset with a single member, the survivor is ungrouped, the same
+ * way `ungroupSuperset` does it — a superset of one isn't a superset.
+ */
+export async function removeExerciseFromWorkout(formData: FormData) {
+  const { supabase } = await requireUser();
+  const sessionId = requiredString(formData, "sessionId");
+  const exerciseId = requiredString(formData, "exerciseId");
+
+  const workout = await getWorkout(sessionId);
+  const group = workout?.exercises.find((e) => e.exercise.id === exerciseId)?.supersetGroup ?? null;
+
+  const { error } = await supabase
+    .from("lift_sets")
+    .delete()
+    .eq("lift_details_id", sessionId)
+    .eq("exercise_id", exerciseId);
+  if (error) throw new Error(`Could not remove exercise: ${error.message}`);
+
+  const partners = group
+    ? (workout?.exercises ?? []).filter((e) => e.supersetGroup === group && e.exercise.id !== exerciseId)
+    : [];
+  if (partners.length === 1) {
+    await supabase
+      .from("lift_sets")
+      .update({ superset_group: null })
+      .eq("lift_details_id", sessionId)
+      .eq("exercise_id", partners[0].exercise.id);
+  }
+
+  await refreshRecordsIfLogged(sessionId, [exerciseId]);
+  // Drops ?add= too, so the exercise doesn't reappear as a pending card.
+  redirect(`/workout/${sessionId}`);
+}
+
 export async function updateWorkoutNotes(formData: FormData) {
   const { supabase } = await requireUser();
   const sessionId = requiredString(formData, "sessionId");

@@ -1,10 +1,17 @@
 import Link from "next/link";
-import { getWorkoutHistory } from "@/lib/lift/queries";
+import { formatDistance, formatPace, formatRunDuration } from "@/lib/calendar/runs";
+import { RUN_TYPE_LABELS, type RunType } from "@/lib/calendar/types";
+import { mergeHistory } from "@/lib/history";
+import { getRunHistory, getWorkoutHistory, type HistoryRun } from "@/lib/lift/queries";
 import { formatDuration } from "@/lib/lift/math";
 import { totalVolume } from "@/lib/lift/stats";
 
+const LIMIT = 100;
+
+/** Lifts and runs together, newest first: one training history, not two logs. */
 export default async function HistoryPage() {
-  const workouts = await getWorkoutHistory(100);
+  const [workouts, runs] = await Promise.all([getWorkoutHistory(LIMIT), getRunHistory(LIMIT)]);
+  const { entries, complete, since } = mergeHistory(workouts, runs, LIMIT);
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-5 px-4 py-8">
@@ -15,14 +22,16 @@ export default async function HistoryPage() {
         </Link>
       </header>
 
-      {workouts.length === 0 ? (
+      {entries.length === 0 ? (
         <p className="text-sm text-neutral-500">
-          No completed workouts yet. Your first one will show up here.
+          No completed workouts or runs yet. Your first one will show up here.
         </p>
       ) : null}
 
       <ul className="flex flex-col gap-2">
-        {workouts.map((w) => {
+        {entries.map((entry) => {
+          if (entry.kind === "run") return <RunRow key={entry.item.sessionId} run={entry.item} />;
+          const w = entry.item;
           const sets = w.exercises.flatMap((e) => e.sets);
           return (
             <li key={w.sessionId}>
@@ -68,6 +77,33 @@ export default async function HistoryPage() {
           );
         })}
       </ul>
+
+      {complete ? null : (
+        <p className="text-xs text-neutral-500">Showing everything since {since}.</p>
+      )}
     </main>
+  );
+}
+
+function RunRow({ run }: { run: HistoryRun }) {
+  const numbers = [formatDistance(run.distanceKm), formatRunDuration(run.durationSec), formatPace(run.paceSecPerKm)]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <li>
+      <Link
+        href={`/calendar/session/${run.sessionId}`}
+        className="flex items-baseline justify-between gap-3 rounded border border-sky-200 bg-sky-50/40 px-4 py-3"
+      >
+        <span className="min-w-0 truncate font-medium">
+          {RUN_TYPE_LABELS[run.runType as RunType] ?? "Run"} run
+          {run.stravaName ? <span className="font-normal text-neutral-500"> · {run.stravaName}</span> : null}
+        </span>
+        <span className="shrink-0 text-sm tabular-nums text-neutral-500">
+          {run.date}
+          {numbers ? ` · ${numbers}` : ""}
+        </span>
+      </Link>
+    </li>
   );
 }

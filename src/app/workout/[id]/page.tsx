@@ -18,6 +18,7 @@ import {
   deleteWorkout,
   finishWorkout,
   groupWithPrevious,
+  removeExerciseFromWorkout,
   saveWorkoutAsRoutine,
   ungroupSuperset,
   updateWorkoutNotes,
@@ -152,18 +153,30 @@ export default async function WorkoutPage({
                 exerciseId={exercise.id}
                 placeholder={ghostText(previous[exercise.id] ?? [], sets.length + 1)}
               />
-              {/* Supersets group an exercise with the one above it, so the
-                  first exercise in a workout has nothing to join. */}
-              <form action={supersetGroup ? ungroupSuperset : groupWithPrevious} className="self-start">
-                <input type="hidden" name="sessionId" value={id} />
-                <input type="hidden" name="exerciseId" value={exercise.id} />
-                <button
-                  className="text-xs text-neutral-400 underline hover:text-neutral-900 disabled:no-underline disabled:opacity-40"
-                  disabled={!supersetGroup && index === 0}
-                >
-                  {supersetGroup ? "Remove from superset" : "Superset with previous"}
-                </button>
-              </form>
+              <div className="flex flex-wrap gap-4">
+                {/* Supersets group an exercise with the one above it, so the
+                    first exercise in a workout has nothing to join. */}
+                <form action={supersetGroup ? ungroupSuperset : groupWithPrevious}>
+                  <input type="hidden" name="sessionId" value={id} />
+                  <input type="hidden" name="exerciseId" value={exercise.id} />
+                  <button
+                    className="text-xs text-neutral-400 underline hover:text-neutral-900 disabled:no-underline disabled:opacity-40"
+                    disabled={!supersetGroup && index === 0}
+                  >
+                    {supersetGroup ? "Remove from superset" : "Superset with previous"}
+                  </button>
+                </form>
+                <form action={removeExerciseFromWorkout}>
+                  <input type="hidden" name="sessionId" value={id} />
+                  <input type="hidden" name="exerciseId" value={exercise.id} />
+                  <ConfirmButton
+                    message={`Remove ${exercise.name} and its ${sets.length} ${sets.length === 1 ? "set" : "sets"} from this workout?`}
+                    className="text-xs text-neutral-400 underline hover:text-red-700"
+                  >
+                    Remove exercise
+                  </ConfirmButton>
+                </form>
+              </div>
             </>
           )}
         </section>
