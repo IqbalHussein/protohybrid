@@ -82,6 +82,30 @@ export async function revokeStrava(accessToken: string) {
   }).catch(() => undefined);
 }
 
+/**
+ * Whether the user's Strava grant still works. Strava's webhook events aren't
+ * signed, so a "deauthorized" event is only believed once Strava itself
+ * refuses the token; a network failure is not a refusal and throws instead.
+ */
+export async function stravaStillAuthorized(supabase: UserClient, userId: string): Promise<boolean> {
+  const connection = await getConnection(supabase, userId, "strava");
+  if (!connection) return false;
+
+  let token: string;
+  try {
+    token = await freshAccessToken(supabase, userId, connection, refreshStrava);
+  } catch (e) {
+    // postForm reports the status; a refused refresh token is a revoked grant.
+    if (e instanceof Error && /returned (400|401)\b/.test(e.message)) return false;
+    throw e;
+  }
+
+  const res = await fetch(`${API}/athlete`, { headers: { Authorization: `Bearer ${token}` }, cache: "no-store" });
+  if (res.status === 401) return false;
+  if (!res.ok) throw new Error(`Strava returned ${res.status}`);
+  return true;
+}
+
 export type StravaActivity = {
   id: number;
   name: string;
@@ -172,7 +196,7 @@ async function fetchRuns(token: string, afterEpoch: number): Promise<StravaActiv
 export type StravaSyncResult = { runs: number; matched: number; created: number; refreshed: number; since: string };
 
 export async function syncStrava(supabase: UserClient, userId: string): Promise<StravaSyncResult> {
-  const connection = await getConnection(supabase, "strava");
+  const connection = await getConnection(supabase, userId, "strava");
   if (!connection) throw new Error("Strava isn't connected.");
   const token = await freshAccessToken(supabase, userId, connection, refreshStrava);
 
@@ -188,10 +212,13 @@ export async function syncStrava(supabase: UserClient, userId: string): Promise<
     const { date, startTime, durationMin } = activityPlacement(activity);
 
     // Imported before: refresh its numbers, leave everything else alone.
+    // Every read here is scoped to this user through the session's plan, not
+    // just by RLS, because background sync runs with the service-role client.
     const { data: existing } = await supabase
       .from("run_details")
-      .select("session_id")
+      .select("session_id, sessions!inner(plans!inner(user_id))")
       .eq("strava_activity_id", actuals.strava_activity_id)
+      .eq("sessions.plans.user_id", userId)
       .maybeSingle();
     if (existing) {
       const { error } = await supabase.from("run_details").update(actuals).eq("session_id", existing.session_id);
@@ -202,7 +229,8 @@ export async function syncStrava(supabase: UserClient, userId: string): Promise<
 
     const { data: rows } = await supabase
       .from("sessions")
-      .select("id, status, run_details!inner(run_type, strava_activity_id)")
+      .select("id, status, run_details!inner(run_type, strava_activity_id), plans!inner(user_id)")
+      .eq("plans.user_id", userId)
       .eq("type", "run")
       .eq("planned_date", date)
       .neq("status", "skipped")

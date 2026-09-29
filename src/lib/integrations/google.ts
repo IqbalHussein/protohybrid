@@ -115,7 +115,7 @@ export function toBusyBlock(event: GoogleEvent) {
 export type GoogleSyncResult = { calendars: number; events: number; removed: number };
 
 export async function syncGoogle(supabase: UserClient, userId: string): Promise<GoogleSyncResult> {
-  const connection = await getConnection(supabase, "google");
+  const connection = await getConnection(supabase, userId, "google");
   if (!connection) throw new Error("Google Calendar isn't connected.");
   const token = await freshAccessToken(supabase, userId, connection, refreshGoogle);
 

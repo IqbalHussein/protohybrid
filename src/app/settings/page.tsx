@@ -37,11 +37,11 @@ export default async function SettingsPage({
   searchParams: Promise<{ error?: string; detail?: string; connected?: string; synced?: string; newRule?: string }>;
 }) {
   const params = await searchParams;
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
   const [rules, strava, google] = await Promise.all([
     getConflictRules(),
-    getConnection(supabase, "strava"),
-    getConnection(supabase, "google"),
+    getConnection(supabase, user.id, "strava"),
+    getConnection(supabase, user.id, "google"),
   ]);
   const newRule = RULE_TYPES.find((t) => t === params.newRule);
   const done = (params.connected ?? params.synced) as Provider | undefined;

@@ -46,7 +46,7 @@ export async function disconnect(formData: FormData) {
   const { supabase, user } = await requireUser();
   const p = provider(formData);
 
-  const connection = await getConnection(supabase, p);
+  const connection = await getConnection(supabase, user.id, p);
   if (connection) {
     if (p === "strava") await revokeStrava(connection.access_token);
     else await revokeGoogle(connection.refresh_token ?? connection.access_token);

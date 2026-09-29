@@ -56,10 +56,20 @@ export type Connection = {
   last_synced_at: string | null;
 };
 
-export async function getConnection(supabase: UserClient, provider: Provider): Promise<Connection | null> {
+/**
+ * A user's connection to a provider. Filtered by user explicitly rather than
+ * trusting RLS alone: background sync runs with the service-role client, which
+ * bypasses RLS, and would otherwise read whichever user's row came first.
+ */
+export async function getConnection(
+  supabase: UserClient,
+  userId: string,
+  provider: Provider,
+): Promise<Connection | null> {
   const { data } = await supabase
     .from("oauth_connections")
     .select("provider, access_token, refresh_token, expires_at, external_account_name, last_synced_at")
+    .eq("user_id", userId)
     .eq("provider", provider)
     .maybeSingle();
   return (data as Connection | null) ?? null;
