@@ -4,11 +4,11 @@ import RuleForm from "@/components/settings/RuleForm";
 import { requireUser } from "@/lib/auth";
 import { RULE_TYPES, RULE_TYPE_LABELS, type RuleType } from "@/lib/calendar/conflicts";
 import { getConflictRules } from "@/lib/calendar/rules";
-import { googleConfigured } from "@/lib/integrations/google";
+import { calendarsToSync, googleConfigured, listGoogleCalendars, type GoogleCalendar } from "@/lib/integrations/google";
 import { getConnection, PROVIDER_NAMES, type Provider } from "@/lib/integrations/oauth";
 import { stravaConfigured } from "@/lib/integrations/strava";
 import { APP_TIME_ZONE } from "@/lib/time";
-import { deleteConflictRule, disconnect, syncNow, toggleConflictRule } from "./actions";
+import { deleteConflictRule, disconnect, saveGoogleCalendars, syncNow, toggleConflictRule } from "./actions";
 
 const ERRORS: Record<string, string> = {
   oauth_state: "The connection attempt expired or didn't come from this browser. Try again.",
@@ -37,12 +37,24 @@ export default async function SettingsPage({
   searchParams: Promise<{ error?: string; detail?: string; connected?: string; synced?: string; newRule?: string }>;
 }) {
   const params = await searchParams;
-  const { supabase } = await requireUser();
+  const { supabase, user } = await requireUser();
   const [rules, strava, google] = await Promise.all([
     getConflictRules(),
     getConnection(supabase, "strava"),
     getConnection(supabase, "google"),
   ]);
+
+  // The picker needs Google's live calendar list. A failure here (expired
+  // grant, Google down) shouldn't take the whole Settings page with it.
+  let calendars: GoogleCalendar[] | null = null;
+  let calendarsError: string | null = null;
+  if (google) {
+    try {
+      calendars = await listGoogleCalendars(supabase, user.id);
+    } catch (e) {
+      calendarsError = e instanceof Error ? e.message : "Could not load your calendars.";
+    }
+  }
   const newRule = RULE_TYPES.find((t) => t === params.newRule);
   const done = (params.connected ?? params.synced) as Provider | undefined;
 
@@ -152,6 +164,13 @@ export default async function SettingsPage({
                     ? new Date(connection.last_synced_at).toLocaleString("en-US", { timeZone: APP_TIME_ZONE })
                     : "never"}
                 </p>
+                {provider === "google" ? (
+                  <CalendarPicker
+                    calendars={calendars}
+                    error={calendarsError}
+                    chosen={calendars ? calendarsToSync(calendars, connection.calendar_ids) : []}
+                  />
+                ) : null}
                 <div className="flex gap-3">
                   <form action={syncNow}>
                     <input type="hidden" name="provider" value={provider} />
@@ -186,5 +205,47 @@ export default async function SettingsPage({
         ))}
       </section>
     </main>
+  );
+}
+
+/**
+ * Which calendars count as commitments. Your own are listed first; a calendar
+ * someone else shares with you is labelled, since its events are theirs.
+ */
+function CalendarPicker({
+  calendars,
+  error,
+  chosen,
+}: {
+  calendars: GoogleCalendar[] | null;
+  error: string | null;
+  chosen: string[];
+}) {
+  if (error) return <p className="text-xs text-red-700">Couldn&apos;t load your calendars: {error}</p>;
+  if (!calendars?.length) return null;
+
+  const own = (c: GoogleCalendar) => c.primary || c.accessRole === "owner";
+  const sorted = [...calendars].sort(
+    (a, b) => Number(!!b.primary) - Number(!!a.primary) || Number(own(b)) - Number(own(a)) ||
+      (a.summary ?? a.id).localeCompare(b.summary ?? b.id),
+  );
+
+  return (
+    <form action={saveGoogleCalendars} className="flex flex-col gap-1.5 rounded bg-neutral-50 p-3">
+      <input type="hidden" name="provider" value="google" />
+      <span className="text-xs text-neutral-500">Import events from:</span>
+      {sorted.map((c) => (
+        <label key={c.id} className="flex items-center gap-2">
+          <input type="checkbox" name="calendarId" value={c.id} defaultChecked={chosen.includes(c.id)} />
+          <span className="min-w-0 truncate">{c.summary ?? c.id}</span>
+          {c.primary ? (
+            <span className="text-xs text-neutral-400">primary</span>
+          ) : own(c) ? null : (
+            <span className="text-xs text-neutral-400">shared with you</span>
+          )}
+        </label>
+      ))}
+      <button className="self-start rounded border border-neutral-900 px-3 py-1 text-xs">Save and sync</button>
+    </form>
   );
 }

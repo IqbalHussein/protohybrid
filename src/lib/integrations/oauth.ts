@@ -54,12 +54,14 @@ export type Connection = {
   expires_at: string | null;
   external_account_name: string | null;
   last_synced_at: string | null;
+  /** Google only: the calendars to import; null until the user chooses (see 0008). */
+  calendar_ids: string[] | null;
 };
 
 export async function getConnection(supabase: UserClient, provider: Provider): Promise<Connection | null> {
   const { data } = await supabase
     .from("oauth_connections")
-    .select("provider, access_token, refresh_token, expires_at, external_account_name, last_synced_at")
+    .select("provider, access_token, refresh_token, expires_at, external_account_name, last_synced_at, calendar_ids")
     .eq("provider", provider)
     .maybeSingle();
   return (data as Connection | null) ?? null;

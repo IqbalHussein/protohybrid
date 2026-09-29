@@ -35,6 +35,7 @@ Apply the migrations in `supabase/migrations/` **in filename order** via the Sup
 | `0005_rest_preferences.sql` | Per-exercise rest-timer overrides |
 | `0006_weekly_calendar.sql` | Session start time and duration, busy-block timestamps |
 | `0007_conflicts_and_sync.sql` | Ad-hoc flag on sessions, Strava fields on runs, per-user Google event ids, conflict-rule columns, `user_settings`, `oauth_connections` |
+| `0008_google_calendar_choice.sql` | Which Google calendars feed busy blocks |
 
 Run the test suite (the training rules — volume, PRs, week math, grid layout — are covered without needing a database):
 
@@ -78,7 +79,7 @@ Both are optional and read-only. Tokens are stored in `oauth_connections`, scope
 
 **Strava:** create an app at <https://www.strava.com/settings/api>. Set its *Authorization Callback Domain* to your app's host (`localhost` for development), then set `STRAVA_CLIENT_ID` and `STRAVA_CLIENT_SECRET`. The first sync reaches back 30 days; later ones re-read the 3 days before the last sync so edits made on Strava come through.
 
-**Google Calendar:** in your Google Cloud project, enable the Calendar API, configure the OAuth consent screen with the `calendar.readonly` scope (add yourself as a test user while the app is in testing), and create an OAuth client of type *Web application* with `http://localhost:3000/api/auth/google/callback` (and your production URL) as an authorized redirect URI. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI`. Sync covers last week through five weeks ahead.
+**Google Calendar:** in your Google Cloud project, enable the Calendar API, configure the OAuth consent screen with the `calendar.readonly` scope (add yourself as a test user while the app is in testing), and create an OAuth client of type *Web application* with `http://localhost:3000/api/auth/google/callback` (and your production URL) as an authorized redirect URI. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI`. Sync covers last week through five weeks ahead. Only your primary calendar is imported until you choose others in Settings — calendars other people share with you are labelled there, since their events aren't your commitments.
 
 Then connect each one from **Settings**.
 

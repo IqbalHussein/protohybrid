@@ -42,6 +42,25 @@ export async function syncNow(formData: FormData) {
   redirect(`/settings?${query}#integrations`);
 }
 
+/**
+ * Save which Google calendars feed busy blocks, then sync straight away so the
+ * week reflects the choice — including removing events from calendars that
+ * were just unticked.
+ */
+export async function saveGoogleCalendars(formData: FormData) {
+  const { supabase, user } = await requireUser();
+  const calendarIds = [...new Set(formData.getAll("calendarId").map(String).filter(Boolean))];
+
+  const { error } = await supabase
+    .from("oauth_connections")
+    .update({ calendar_ids: calendarIds })
+    .eq("user_id", user.id)
+    .eq("provider", "google");
+  if (error) throw new Error(`Could not save calendars: ${error.message}`);
+
+  await syncNow(formData);
+}
+
 export async function disconnect(formData: FormData) {
   const { supabase, user } = await requireUser();
   const p = provider(formData);

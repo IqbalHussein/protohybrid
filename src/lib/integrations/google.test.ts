@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBusy, toBusyBlock, type GoogleEvent } from "./google";
+import { calendarsToSync, isBusy, toBusyBlock, type GoogleEvent } from "./google";
 
 function event(over: Partial<GoogleEvent> = {}): GoogleEvent {
   return {
@@ -45,5 +45,29 @@ describe("toBusyBlock", () => {
       start_time: "2026-09-16T13:00:00.000Z",
       end_time: "2026-09-16T15:00:00.000Z",
     });
+  });
+});
+
+describe("calendarsToSync", () => {
+  const calendars = [
+    { id: "me@example.com", primary: true, accessRole: "owner" },
+    { id: "classes@example.com", accessRole: "reader" },
+    { id: "partner@example.com", accessRole: "freeBusyReader" },
+  ];
+
+  it("imports only the primary calendar until the user chooses", () => {
+    expect(calendarsToSync(calendars, null)).toEqual(["me@example.com"]);
+  });
+
+  it("imports exactly the chosen calendars, even without the primary", () => {
+    expect(calendarsToSync(calendars, ["classes@example.com"])).toEqual(["classes@example.com"]);
+  });
+
+  it("drops a chosen calendar the user can no longer see", () => {
+    expect(calendarsToSync(calendars, ["gone@example.com", "me@example.com"])).toEqual(["me@example.com"]);
+  });
+
+  it("respects choosing nothing", () => {
+    expect(calendarsToSync(calendars, [])).toEqual([]);
   });
 });
