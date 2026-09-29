@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth";
 import { timeStringToMinutes, zonedToUtc } from "@/lib/time";
 import { addDays, weekDates } from "@/lib/week";
+import type { LoadSet } from "./load";
 import type { BusyBlock, CalendarSession, LiftDetails, RunDetails, Week } from "./types";
 
 const SESSION_COLUMNS =
@@ -154,6 +155,31 @@ export async function getLoggedSetCounts(sessionIds: string[]): Promise<Map<stri
     counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   return counts;
+}
+
+/**
+ * The sets behind a week's lifting load, with each exercise's muscle group so
+ * lower-body work can be told apart. A week is a handful of sessions, far
+ * below PostgREST's row cap, so this reads in one request.
+ */
+export async function getLoadSets(sessionIds: string[]): Promise<LoadSet[]> {
+  if (!sessionIds.length) return [];
+  const { supabase } = await requireUser();
+
+  const { data, error } = await supabase
+    .from("lift_sets")
+    .select("lift_details_id, weight, reps, set_type, exercises(muscle_group)")
+    .in("lift_details_id", sessionIds);
+  if (error) throw new Error(`Could not load sets: ${error.message}`);
+
+  return (data ?? []).map((row) => ({
+    lift_details_id: row.lift_details_id as string,
+    weight: row.weight as number | null,
+    reps: row.reps as number | null,
+    set_type: row.set_type as LoadSet["set_type"],
+    muscle_group: one(row.exercises as { muscle_group: string | null } | { muscle_group: string | null }[] | null)
+      ?.muscle_group ?? null,
+  }));
 }
 
 /** Routine names for the lift session editor's "pull target exercises from" picker. */
