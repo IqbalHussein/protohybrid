@@ -40,8 +40,8 @@ export default async function SettingsPage({
   const { supabase, user } = await requireUser();
   const [rules, strava, google] = await Promise.all([
     getConflictRules(),
-    getConnection(supabase, "strava"),
-    getConnection(supabase, "google"),
+    getConnection(supabase, user.id, "strava"),
+    getConnection(supabase, user.id, "google"),
   ]);
 
   // The picker needs Google's live calendar list. A failure here (expired

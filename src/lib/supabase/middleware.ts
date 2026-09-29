@@ -2,7 +2,8 @@ import { createServerClient, type CookieMethodsServer } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
 // Routes reachable without a session. Everything else redirects to /login.
-const PUBLIC_PATHS = ["/login", "/auth"];
+// Webhooks and the scheduler have no session; each checks its own secret.
+const PUBLIC_PATHS = ["/login", "/auth", "/api/webhooks/", "/api/cron/"];
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request });

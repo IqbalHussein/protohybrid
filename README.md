@@ -69,7 +69,7 @@ Done — Next Steps #1–#7 in `project-spec.md`, i.e. the whole v1 MVP:
 - **Google Calendar sync** (#6) — timed, busy events from the calendars ticked in Google become read-only busy blocks; all-day, "free" and declined events are skipped, and events deleted in Google are removed
 - **Conflict rules** (#7) — `src/lib/calendar/conflicts.ts`, a pure engine with four rule types (minimum hours between two kinds of session, no hard sessions back to back, rest-day frequency, overlap with a commitment). Four defaults are seeded once per user and every threshold is editable in Settings. Ad-hoc and skipped sessions are never flagged
 
-Sync runs when you connect and from **Sync now** in Settings. There's no background sync yet.
+Sync runs when you connect, from **Sync now** in Settings, and — once [background sync](#background-sync) is set up — on its own.
 
 **Time zone:** v1 is single-user, so the app's zone is one constant, `APP_TIME_ZONE` in `src/lib/time.ts`. Phase 2 swaps it for a user column in that one place.
 
@@ -82,6 +82,24 @@ Both are optional and read-only. Tokens are stored in `oauth_connections`, scope
 **Google Calendar:** in your Google Cloud project, enable the Calendar API, configure the OAuth consent screen with the `calendar.readonly` scope (add yourself as a test user while the app is in testing), and create an OAuth client of type *Web application* with `http://localhost:3000/api/auth/google/callback` (and your production URL) as an authorized redirect URI. Set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REDIRECT_URI`. Sync covers last week through five weeks ahead. Only your primary calendar is imported until you choose others in Settings — calendars other people share with you are labelled there, since their events aren't your commitments.
 
 Then connect each one from **Settings**.
+
+## Background sync
+
+Optional, and needs a deployment with a public URL. Set `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET` and `STRAVA_WEBHOOK_VERIFY_TOKEN` (see `.env.local.example`).
+
+- **Scheduled sync.** `vercel.json` calls `/api/cron/sync` daily at 10:00 UTC, which syncs every Strava and Google connection. Daily is the most Vercel's Hobby plan allows; on Pro, tighten the schedule (e.g. `0 * * * *`) to keep Google busy blocks fresher. Elsewhere, have any scheduler `GET` that path with `Authorization: Bearer $CRON_SECRET`.
+- **Strava webhook.** New and edited runs arrive within minutes. Register the subscription once, after deploying:
+
+  ```bash
+  curl -X POST https://www.strava.com/api/v3/push_subscriptions \
+    -F client_id=$STRAVA_CLIENT_ID -F client_secret=$STRAVA_CLIENT_SECRET \
+    -F callback_url=https://<your-domain>/api/webhooks/strava \
+    -F verify_token=$STRAVA_WEBHOOK_VERIFY_TOKEN
+  ```
+
+  Deleting an activity on Strava leaves the run in your history, the same as disconnecting does. If you revoke the app on Strava's side, the webhook drops the stored tokens — after confirming with Strava, since its events aren't signed.
+
+The service-role key bypasses RLS, so background sync only runs code that filters by user explicitly: every sync read is scoped to the user it's syncing.
 
 ## Structure
 
