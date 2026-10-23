@@ -3,7 +3,14 @@ import { notFound } from "next/navigation";
 import ConfirmButton from "@/components/ConfirmButton";
 import SessionForm from "@/components/calendar/SessionForm";
 import { getRoutineOptions, getSession } from "@/lib/calendar/queries";
-import { formatDistance, formatPace, formatRunDuration, secondsToMinutes } from "@/lib/calendar/runs";
+import {
+  compareRun,
+  formatDistance,
+  formatPace,
+  formatRunDuration,
+  runDifferences,
+  secondsToMinutes,
+} from "@/lib/calendar/runs";
 import { SESSION_STATUS_LABELS } from "@/lib/types";
 import { mondayOf } from "@/lib/week";
 import {
@@ -31,6 +38,18 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
   const isLift = session.type === "lift";
   const done = session.status === "completed";
   const started = Boolean(session.lift?.started_at);
+  // A completed run keeps its targets on screen next to what was run.
+  const comparison = !isLift && done && session.run ? compareRun(session.run) : null;
+  const differences = comparison && session.run ? runDifferences(session.run) : null;
+  const actual = [
+    formatDistance(session.run?.actual_distance_km ?? null),
+    formatRunDuration(session.run?.actual_duration_sec ?? null),
+    formatPace(session.run?.actual_pace_sec_per_km ?? null),
+    session.run?.actual_avg_hr ? `${Math.round(session.run.actual_avg_hr)} bpm` : null,
+    session.run?.actual_elevation_m ? `${Math.round(session.run.actual_elevation_m)} m climb` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-6 px-4 py-8">
@@ -85,17 +104,17 @@ export default async function SessionPage({ params }: { params: Promise<{ id: st
                 </span>
               ) : null}
             </p>
+            {comparison ? (
+              <p className="mt-1 tabular-nums text-neutral-500">{comparison.planned}</p>
+            ) : null}
             <p className="mt-1 tabular-nums text-neutral-600">
-              {[
-                formatDistance(session.run?.actual_distance_km ?? null),
-                formatRunDuration(session.run?.actual_duration_sec ?? null),
-                formatPace(session.run?.actual_pace_sec_per_km ?? null),
-                session.run?.actual_avg_hr ? `${Math.round(session.run.actual_avg_hr)} bpm` : null,
-                session.run?.actual_elevation_m ? `${Math.round(session.run.actual_elevation_m)} m climb` : null,
-              ]
-                .filter(Boolean)
-                .join(" · ") || "No distance or duration recorded."}
+              {actual ? `${comparison ? "Ran " : ""}${actual}` : "No distance or duration recorded."}
             </p>
+            {differences ? (
+              <p className="mt-1 tabular-nums text-neutral-500">
+                {differences.length ? differences.join(" · ") : "On plan."}
+              </p>
+            ) : null}
             <form action={setSessionStatus} className="mt-2">
               <input type="hidden" name="sessionId" value={id} />
               <input type="hidden" name="status" value="planned" />

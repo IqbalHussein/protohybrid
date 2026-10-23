@@ -289,7 +289,14 @@ function SessionCard({
         </span>
       ) : null}
 
-      {session.subtitle ? <span className="block truncate opacity-70">{session.subtitle}</span> : null}
+      {session.runComparison ? (
+        <span className="block opacity-70" title={session.subtitle ?? undefined}>
+          <span className="block truncate">{session.runComparison.planned}</span>
+          <span className="block truncate">{session.runComparison.ran}</span>
+        </span>
+      ) : session.subtitle ? (
+        <span className="block truncate opacity-70">{session.subtitle}</span>
+      ) : null}
 
       {/* The card half of the conflict surface (see src/lib/calendar/conflicts.ts). */}
       {session.conflicts.map((message) => (

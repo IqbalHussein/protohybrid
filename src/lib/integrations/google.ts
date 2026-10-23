@@ -81,6 +81,43 @@ async function api<T>(token: string, path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+export type GoogleCalendar = {
+  id: string;
+  summary?: string;
+  primary?: boolean;
+  /** "owner" | "writer" | "reader" | "freeBusyReader" */
+  accessRole?: string;
+};
+
+async function fetchCalendars(token: string): Promise<GoogleCalendar[]> {
+  const { items = [] } = await api<{ items?: GoogleCalendar[] }>(
+    token,
+    "/users/me/calendarList?minAccessRole=freeBusyReader",
+  );
+  return items;
+}
+
+/** The user's calendars, for the picker in Settings. */
+export async function listGoogleCalendars(supabase: UserClient, userId: string): Promise<GoogleCalendar[]> {
+  const connection = await getConnection(supabase, userId, "google");
+  if (!connection) return [];
+  const token = await freshAccessToken(supabase, userId, connection, refreshGoogle);
+  return fetchCalendars(token);
+}
+
+/**
+ * Which calendars to import. Until the user chooses, only the primary
+ * calendar — the one that is certainly their own; ticking a calendar in
+ * Google's sidebar only means they like to see it, and it may well be
+ * someone else's. After a choice, exactly the chosen calendars that still
+ * exist, which may be none.
+ */
+export function calendarsToSync(calendars: GoogleCalendar[], chosen: string[] | null): string[] {
+  if (chosen == null) return calendars.filter((c) => c.primary).map((c) => c.id);
+  const available = new Set(calendars.map((c) => c.id));
+  return chosen.filter((id) => available.has(id));
+}
+
 export type GoogleEvent = {
   id: string;
   status?: string;
@@ -123,13 +160,7 @@ export async function syncGoogle(supabase: UserClient, userId: string): Promise<
   const timeMin = zonedToUtc(addDays(monday, -7 * WEEKS_BACK)).toISOString();
   const timeMax = zonedToUtc(addDays(monday, 7 * (WEEKS_AHEAD + 1))).toISOString();
 
-  // The calendars the user has ticked in Google's own sidebar, plus their
-  // primary one, which is always what "my calendar" means.
-  const { items: calendars = [] } = await api<{ items?: { id: string; selected?: boolean; primary?: boolean }[] }>(
-    token,
-    "/users/me/calendarList?minAccessRole=freeBusyReader",
-  );
-  const calendarIds = calendars.filter((c) => c.selected || c.primary).map((c) => c.id);
+  const calendarIds = calendarsToSync(await fetchCalendars(token), connection.calendar_ids);
 
   // Keyed by event id: an invite on two calendars is one commitment.
   const events = new Map<string, ReturnType<typeof toBusyBlock>>();

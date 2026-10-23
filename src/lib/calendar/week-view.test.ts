@@ -147,7 +147,7 @@ describe("buildWeekView", () => {
     expect(titles).toContain("push");
   });
 
-  it("subtitles a planned run with its targets and a completed one with its actuals", () => {
+  it("subtitles a planned run with its targets and an unplanned completed one with its actuals", () => {
     const view = buildWeekView(
       week({
         sessions: [
@@ -172,6 +172,54 @@ describe("buildWeekView", () => {
     const cards = view.days.find((d) => d.date === "2026-09-16")!.untimed;
     expect(cards.find((c) => c.id === "planned")!.subtitle).toBe("10 km · 5:30 /km");
     expect(cards.find((c) => c.id === "done")!.subtitle).toBe("10.2 km · 55m");
+  });
+
+  it("keeps a completed run's plan beside its result", () => {
+    const view = buildWeekView(
+      week({
+        sessions: [
+          session({
+            id: "done",
+            type: "run",
+            status: "completed",
+            lift: null,
+            run: runDetails({
+              target_distance_km: 10,
+              target_pace_sec_per_km: 300,
+              actual_distance_km: 9.4,
+              actual_pace_sec_per_km: 312,
+            }),
+          }),
+        ],
+      }),
+      { now: NOW },
+    );
+
+    const card = view.days.find((d) => d.date === "2026-09-16")!.untimed[0];
+    expect(card.subtitle).toBe("Planned 10 km @ 5:00 /km · Ran 9.4 km @ 5:12 /km");
+    expect(card.runComparison).toEqual({ planned: "Planned 10 km @ 5:00 /km", ran: "Ran 9.4 km @ 5:12 /km" });
+  });
+
+  it("has no run comparison on a planned run or an unplanned completed one", () => {
+    const view = buildWeekView(
+      week({
+        sessions: [
+          session({ id: "planned", type: "run", lift: null, run: runDetails({ target_distance_km: 10 }) }),
+          session({
+            id: "adhoc",
+            type: "run",
+            status: "completed",
+            lift: null,
+            run: runDetails({ actual_distance_km: 5 }),
+          }),
+        ],
+      }),
+      { now: NOW },
+    );
+
+    const cards = view.days.find((d) => d.date === "2026-09-16")!.untimed;
+    expect(cards.every((c) => c.runComparison === null)).toBe(true);
+    expect(cards.find((c) => c.id === "adhoc")!.subtitle).toBe("5 km");
   });
 
   it("subtitles a lift with its logged set count", () => {

@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import ConfirmButton from "@/components/ConfirmButton";
-import { getWorkout } from "@/lib/lift/queries";
+import { getRoutine, getWorkout } from "@/lib/lift/queries";
 import { formatDuration, roundTo } from "@/lib/lift/math";
+import { comparePlan, PLAN_STATUS_LABELS, type PlanStatus } from "@/lib/lift/plan";
 import { totalVolume } from "@/lib/lift/stats";
 import { PR_LABELS, type PrRecordType } from "@/lib/lift/types";
 import { createClient } from "@/lib/supabase/server";
@@ -20,6 +21,22 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
     .from("personal_records")
     .select("id, record_type, value, weight, reps, exercise_id, exercises(name)")
     .eq("session_id", id);
+
+  // A workout started from a routine is held up against it, exercise by exercise.
+  const routine = workout.routineId ? await getRoutine(workout.routineId) : null;
+  const planRows = routine
+    ? comparePlan(
+        routine.exercises.map((e) => ({
+          exerciseId: e.exercise_id,
+          name: e.exercise.name,
+          targetSets: e.target_sets,
+          targetReps: e.target_reps,
+        })),
+        workout.exercises.flatMap(({ exercise, sets }) =>
+          sets.map((s) => ({ exerciseId: exercise.id, name: exercise.name, reps: s.reps, set_type: s.set_type })),
+        ),
+      )
+    : [];
 
   const sets = workout.exercises.flatMap((e) => e.sets);
   const workingSets = sets.filter((s) => s.set_type !== "warmup");
@@ -82,6 +99,33 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
         )}
       </section>
 
+      {routine && planRows.length ? (
+        <section className="flex flex-col gap-2">
+          <h2 className="text-lg font-medium">Planned vs. done</h2>
+          <p className="text-xs text-neutral-500">
+            Against {routine.routine.name} as it is now. Working sets only; warm-ups don&apos;t count.
+          </p>
+          <ul className="flex flex-col gap-1.5">
+            {planRows.map((row) => (
+              <li
+                key={row.exerciseId}
+                className="flex items-baseline justify-between gap-3 rounded border border-neutral-200 px-4 py-2.5 text-sm"
+              >
+                <span className="min-w-0">
+                  <span className="block font-medium">{row.name}</span>
+                  <span className="block tabular-nums text-neutral-600">
+                    Planned {row.planned ?? "—"} · Done {row.done ?? "—"}
+                  </span>
+                </span>
+                <span className={`shrink-0 rounded px-1.5 py-0.5 text-xs ${PLAN_STATUS_STYLES[row.status]}`}>
+                  {PLAN_STATUS_LABELS[row.status]}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <section className="flex flex-col gap-2">
         <h2 className="text-lg font-medium">Sets</h2>
         {workout.exercises.map(({ exercise, sets: exerciseSets }) => (
@@ -141,3 +185,10 @@ export default async function SummaryPage({ params }: { params: Promise<{ id: st
     </main>
   );
 }
+
+const PLAN_STATUS_STYLES: Record<PlanStatus, string> = {
+  met: "bg-emerald-50 text-emerald-800",
+  short: "bg-amber-50 text-amber-800",
+  skipped: "bg-neutral-100 text-neutral-500",
+  added: "bg-sky-50 text-sky-800",
+};
