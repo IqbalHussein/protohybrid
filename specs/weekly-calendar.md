@@ -103,6 +103,6 @@ Flagged before build, same as the lift-logger spec. Address these while implemen
 
 - **Run creation has no existing code path.** Every session written so far comes from `startWorkout`, which hardcodes `type: 'lift'`. Runs get created for the first time in this feature, and `run_details.run_type` being NOT NULL means the create form cannot defer that choice to later.
 
-- **Planned-vs-actual (MVP #4) is only half-buildable right now.** Lift actuals exist through the logger; run actuals do not until Strava. Flow #4's manual run completion is the stopgap — make sure the UI does not imply run data arrived automatically.
+- **Planned-vs-actual (MVP #4) is built.** A completed run keeps its targets beside its actuals on the card and the session page ("Planned 10 km @ 5:00 /km · Ran 9.4 km @ 5:12 /km"), with the misses spelled out on the session page; the logic is in `src/lib/calendar/runs.ts`. A lift started from a routine is compared per exercise (sets × reps, working sets only) on the workout summary, against the routine as it is now, since routines aren't versioned; see `src/lib/lift/plan.ts`. Manual run completion still must not imply the data arrived from Strava.
 
 - **Empty-week navigation must not create plan rows.** Browsing six weeks forward should leave no trace in `plans`. Read paths query by `(user_id, week_start_date)` and tolerate a miss; only writes create.

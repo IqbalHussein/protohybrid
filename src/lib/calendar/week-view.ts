@@ -11,7 +11,14 @@ import {
   type Placement,
   type Span,
 } from "./layout";
-import { formatDistance, formatPace, formatRunDuration } from "./runs";
+import {
+  compareRun,
+  formatDistance,
+  formatPace,
+  formatRunDuration,
+  plannedVsRan,
+  type RunComparison,
+} from "./runs";
 import { ASSUMED_DURATION_MIN, RUN_TYPE_LABELS, type BusyBlock, type CalendarSession, type Week } from "./types";
 
 /**
@@ -30,6 +37,12 @@ export type SessionView = {
   status: SessionStatus;
   title: string;
   subtitle: string | null;
+  /**
+   * A completed run with a plan: the same text as `subtitle`, in its two
+   * halves, so a narrow card can give each a line instead of truncating the
+   * result away.
+   */
+  runComparison: RunComparison | null;
   /** Null for an "anytime that day" session, which is pinned above the timed cards. */
   startMin: number | null;
   durationMin: number | null;
@@ -173,6 +186,8 @@ function toView(
     status: session.status,
     title: sessionTitle(session),
     subtitle: sessionSubtitle(session, setCounts),
+    runComparison:
+      session.type === "run" && session.status === "completed" && session.run ? compareRun(session.run) : null,
     startMin: session.startMin,
     durationMin: session.durationMin,
     assumedDuration: session.startMin != null && session.durationMin == null,
@@ -192,13 +207,17 @@ function sessionTitle(session: CalendarSession): string {
   return session.lift?.focus ?? "Lift";
 }
 
-/** The one line under a card's title: what happened if it did, what's planned if it hasn't. */
+/** The one line under a card's title: what was planned, and what happened once it has. */
 function sessionSubtitle(session: CalendarSession, setCounts: Map<string, number>): string | null {
   if (session.type === "run") {
     const run = session.run;
     if (!run) return null;
 
     if (session.status === "completed") {
+      // The plan stays on the card once the run is done, so the week shows
+      // how it went against what was intended rather than overwriting it.
+      const compared = plannedVsRan(run);
+      if (compared) return compared;
       const actual = [
         formatDistance(run.actual_distance_km),
         formatRunDuration(run.actual_duration_sec),
