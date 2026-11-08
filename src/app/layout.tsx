@@ -1,5 +1,14 @@
 import type { Metadata } from "next";
+import { Archivo } from "next/font/google";
+import { TimezoneSync } from "@/components/timezone-sync";
 import "./globals.css";
+
+const archivo = Archivo({
+  subsets: ["latin"],
+  axes: ["wdth"],
+  variable: "--font-archivo",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "ProtoHybrid",
@@ -12,8 +21,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-white text-neutral-900 antialiased">
+    <html lang="en" className={archivo.variable}>
+      <body className="min-h-screen">
+        <TimezoneSync />
         {children}
       </body>
     </html>

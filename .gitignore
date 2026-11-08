@@ -24,3 +24,6 @@ next-env.d.ts
 
 # supabase
 /supabase/.temp
+.vercel
+.env*
+!.env.local.example

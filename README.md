@@ -2,45 +2,63 @@
 
 Web app for hybrid athletes (lifters who also run) to plan and track both disciplines as one integrated training load. See `project-spec.md` for the full spec.
 
+Live: https://protohybrid.vercel.app
+
 ## Stack
 
-Next.js (App Router, TypeScript, Tailwind) + Supabase (Postgres, auth-ready).
+Next.js 15 (App Router, TypeScript, Tailwind) + Supabase (Postgres, magic-link auth, RLS). Deployed on Vercel.
+
+## Features
+
+- **Week** (`/week`): plan runs and lifts Mon–Sun, drag to reschedule, planned vs actual, busy blocks from Google Calendar or added by hand, and conflict warnings. A load strip at the top shows each day's planned minutes.
+- **Lifts** (`/lifts`): log sets against an exercise library (with custom exercises), routines, a per-exercise rest timer, and history plus PRs per exercise.
+- **Runs** (`/runs`): log runs manually, complete planned runs, and compare target vs actual.
+- **Settings**: conflict rules, Google Calendar connection, busy blocks, and lb/kg.
 
 ## Getting started
 
-This scaffold was hand-written (no `node_modules`, no lockfile yet) — install dependencies before running anything:
-
 ```bash
 npm install
-```
-
-Copy the env file and fill in your Supabase project keys:
-
-```bash
 cp .env.local.example .env.local
 ```
 
-- `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY` — from your Supabase project's Settings > API
-- `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET` — not needed until Strava sync (Next Steps #5)
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — you already have the Google Cloud project; add these when wiring up Calendar sync (Next Steps #6)
+- `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`: from Supabase > Settings > API.
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`: optional. These are OAuth credentials for Calendar sync. In Google Cloud, register these redirect URIs: `http://localhost:3000/api/auth/google/callback` and `https://<your-domain>/api/auth/google/callback`.
 
-Apply the database schema (`supabase/migrations/0001_init.sql`) via the Supabase CLI or by pasting it into the SQL editor in your Supabase project dashboard.
-
-Run the dev server:
+Sign-in uses Supabase email magic links. In Supabase > Authentication > URL Configuration, set the Site URL to your deployed URL. Then add `http://localhost:3000/auth/callback` and `https://<your-domain>/auth/callback` to Redirect URLs.
 
 ```bash
 npm run dev
 ```
 
-## Project status
+## Database
 
-Scaffold + initial schema are done (Next Steps #1–#2 in `project-spec.md`). Remaining work — lift logger, weekly calendar, Strava sync, Google Calendar sync, conflict-check logic — is best done iteratively with a real dev server and terminal access, e.g. by opening Claude Code in this directory.
+**The live database is the source of truth, not `0001_init.sql`.** The live schema was changed outside these migrations at some point (an exercise library, routines, PRs, OAuth connections, and more). `supabase/tests/live_schema.sql` is a replica of it, rebuilt from a catalog dump on 2026-11-03.
+
+- `0001_init.sql` is historical. Don't re-run it.
+- `0002_manual_run_log.sql` and `0003_full_app.sql` were written against the live schema and are safe to re-run. Apply them in the Supabase SQL editor.
+- The built-in exercise library (876 rows) lives only in the live database.
+
+Lift weights are stored in **lb**. The kg setting converts for display and entry.
+
+## Tests
+
+```bash
+npm test          # Vitest: date/time, units, durations, conflict engine, lift and Google helpers
+npm run test:db   # Applies 0003 to the live-schema replica in PGlite and exercises every RPC
+```
+
+Run `npm run test:db` before applying any new migration to Supabase.
 
 ## Structure
 
 ```
-src/app/            Next.js App Router pages
-src/lib/supabase/   Supabase client (browser) and server client helpers
-supabase/migrations/ SQL schema
-project-spec.md      Full project spec
+src/app/(app)/          Signed-in pages: week, lifts, runs, settings
+src/app/login, auth/    Magic-link sign-in
+src/app/api/auth/google Google Calendar OAuth
+src/components/ui/      Design-system primitives (Button, Field, Panel, Dialog, ...)
+src/lib/                Shared logic: types, time zones, units, conflicts, lifts, google
+supabase/migrations/    SQL migrations
+supabase/tests/         Live-schema replica for migration tests
+scripts/test-db.mjs     PGlite migration test suite
 ```

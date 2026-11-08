@@ -27,34 +27,44 @@ Treat lifting and running as one training load, not two logs. The app's job is a
 
 1. **Weekly calendar view** — plan runs and lifts across the week, drag to reschedule. Syncs with Google Calendar so existing non-training commitments (classes, work shifts) show up automatically and sessions get scheduled around real availability
 2. **Lift logger** — replaces the Apple Note: exercise, sets, reps, weight, RPE (optional), with history per exercise and basic PR tracking. Starting fresh, no migration from the existing Apple Note
-3. **Strava sync** — pull completed runs in automatically (distance, pace, HR, elevation) via the Strava API instead of manual entry
+3. **Run logger** — manually log completed runs (date, type, distance, duration, optional avg HR, elevation gain, notes); pace is calculated from distance and duration
 4. **Planned vs. actual** — see what was scheduled next to what actually happened
 5. **Conflict warnings** — rule-based flags (e.g., heavy legs + hard run within 24h), user-configurable from the start rather than hardcoded
 
 ### Explicitly out of scope for v1
 
 - Recovery/HRV scoring or auto-adjusting plans
+- Third-party run imports (Strava, Garmin) — runs are logged manually
 - Auto-generated training plans (AI coach, periodization templates)
 - Multi-user accounts, social features, sharing
 - Mobile app (web only for now, mobile-responsive is enough)
 
 These are noted here so the data model doesn't have to be reworked when they're added later — not because they're bad ideas.
 
-## Data Model (rough sketch)
+## Data Model
+
+The live database (replicated in `supabase/tests/live_schema.sql`) is authoritative. Summary:
+
 
 - `users` — id, email (single row for now, but modeled from day one so v2 multi-user doesn't require a rewrite)
 - `plans` — id, user_id, week_start_date
-- `sessions` — id, plan_id, type (run | lift), planned_date, status (planned | completed | skipped)
-- `run_details` — session_id, run_type, target_distance, target_pace, target_duration, actual_distance, actual_pace, actual_duration, strava_activity_id
-- `lift_details` — session_id, focus, notes
-- `lift_sets` — id, lift_details_id, exercise_name, set_number, reps, weight, rpe
+- `sessions` — id, plan_id, type (run | lift), planned_date, planned_start_time, planned_duration_min, status (planned | completed | skipped), routine_id, ad_hoc
+- `run_details` — session_id, run_type, target_distance, target_pace, target_duration, actual_distance, actual_pace, actual_duration, actual_avg_hr, actual_elevation_m, notes
+- `lift_details` — session_id, focus, notes, started_at, completed_at
+- `lift_sets` — id, lift_details_id, exercise_id, set_number, set_type (warmup | working | drop | failure), reps, weight (lb), rpe
+- `exercises` — built-in library plus per-user custom exercises
+- `routines` / `routine_exercises` — reusable lift templates with target sets and reps
+- `personal_records` — PR history per exercise (heaviest weight, best e1RM, most reps, best volume), rebuilt on every lift change
+- `exercise_rest_prefs` — rest-timer seconds per exercise
 - `busy_blocks` — id, user_id, title, start_time, end_time, source (manual | google_calendar) — non-training commitments (classes, work shifts) the calendar schedules around, synced from Google Calendar
-- `conflict_rules` — id, user_id, rule_type, params (e.g. min_hours_between, session_type_a, session_type_b) — user-configurable conflict-detection rules
+- `conflict_rules` — id, user_id, name, rule_type (min_hours_between | no_back_to_back_hard | max_days_without_rest | busy_block_overlap), session_type_a/b, params, enabled
+- `user_settings` — weight_unit (lb | kg), conflict_rules_seeded
+- `oauth_connections` — Google Calendar tokens
 
 ## Roadmap
 
 **Phase 1 — Personal MVP** (this spec's scope)
-Build the calendar, lift logger, Strava sync, and conflict warnings for single-user use.
+Build the calendar, lift logger, run logger, and conflict warnings for single-user use.
 
 **Phase 2 — Shareable**
 Add Supabase auth, per-user data isolation (already modeled via `user_id`), onboarding flow, maybe a landing page.
@@ -64,15 +74,16 @@ Recovery signals, auto-suggested rest days, race taper templates, richer analyti
 
 ## Open Questions
 
-- Strava API rate limits / OAuth setup — needs a Strava developer app registration (only needed once we reach Next Steps #5, not before)
 - Google Calendar API OAuth setup — Google Cloud project with Calendar API already created; still need OAuth Client ID/Secret, consent screen scopes, and redirect URI once the app is scaffolded
 
 ## Next Steps
 
-1. Scaffold Next.js project + Supabase project
-2. Build data model / schema
-3. Build lift logger (highest immediate value — replaces the Apple Note)
-4. Build weekly calendar view
-5. Wire up Strava OAuth + sync
-6. Wire up Google Calendar OAuth + sync
-7. Add conflict-check logic (user-configurable rules)
+All Phase 1 steps are built:
+
+1. ~~Scaffold Next.js project + Supabase project~~
+2. ~~Build data model / schema~~
+3. ~~Build lift logger~~
+4. ~~Build weekly calendar view~~
+5. ~~Build manual run logger~~
+6. ~~Wire up Google Calendar OAuth + sync~~ (code done; needs OAuth credentials)
+7. ~~Add conflict-check logic (user-configurable rules)~~
