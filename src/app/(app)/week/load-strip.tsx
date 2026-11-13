@@ -10,11 +10,11 @@ function minutes(s: CardSession): number {
 }
 
 function describe(date: string, sessions: CardSession[], conflicts: number): string {
-  if (sessions.length === 0) return `${formatDateLabel(date)}: rest${conflicts ? `, ${conflicts} conflict` : ""}.`;
+  const c = conflicts ? `, ${conflicts} ${conflicts === 1 ? "conflict" : "conflicts"}` : "";
+  if (sessions.length === 0) return `${formatDateLabel(date)}: rest${c}.`;
   const parts = sessions.map(
     (s) => `${minutes(s)} minute ${s.type} ${s.status === "completed" ? "done" : "planned"}`,
   );
-  const c = conflicts ? `, ${conflicts} ${conflicts === 1 ? "conflict" : "conflicts"}` : "";
   return `${formatDateLabel(date)}: ${parts.join(", ")}${c}.`;
 }
 

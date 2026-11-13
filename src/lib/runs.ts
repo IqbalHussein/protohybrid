@@ -1,6 +1,9 @@
 export { RUN_TYPES } from "./types";
 export type { RunType } from "./types";
 
+// Run time, pace and distance parsing/formatting. Distances are km and
+// paces are seconds per km throughout.
+
 // Accepts "mm:ss" or "h:mm:ss". Returns total seconds, or null if malformed.
 export function parseDuration(input: string): number | null {
   const parts = input.trim().split(":");

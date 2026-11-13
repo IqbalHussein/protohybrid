@@ -12,6 +12,8 @@ import { LoadStrip } from "./load-strip";
 import { PlanSessionForm } from "./plan-session-form";
 import { WeekBoard } from "./week-board";
 
+// The planner: load strip, the week's board, and conflict warnings.
+// ?start=YYYY-MM-DD picks the week (snapped to its Monday).
 export default async function WeekPage({ searchParams }: { searchParams: Promise<{ start?: string }> }) {
   const { start: startParam } = await searchParams;
   const { supabase } = await requireUser();

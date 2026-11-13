@@ -46,8 +46,8 @@ These are noted here so the data model doesn't have to be reworked when they're 
 The live database (replicated in `supabase/tests/live_schema.sql`) is authoritative. Summary:
 
 
-- `users` — id, email (single row for now, but modeled from day one so v2 multi-user doesn't require a rewrite)
-- `plans` — id, user_id, week_start_date
+- `auth.users` — Supabase Auth users (magic-link sign-in); every table below is scoped to one via RLS
+- `plans` — id, user_id, week_start_date (always a Monday; created on demand by `ensure_plan`)
 - `sessions` — id, plan_id, type (run | lift), planned_date, planned_start_time, planned_duration_min, status (planned | completed | skipped), routine_id, ad_hoc
 - `run_details` — session_id, run_type, target_distance, target_pace, target_duration, actual_distance, actual_pace, actual_duration, actual_avg_hr, actual_elevation_m, notes
 - `lift_details` — session_id, focus, notes, started_at, completed_at
@@ -67,14 +67,15 @@ The live database (replicated in `supabase/tests/live_schema.sql`) is authoritat
 Build the calendar, lift logger, run logger, and conflict warnings for single-user use.
 
 **Phase 2 — Shareable**
-Add Supabase auth, per-user data isolation (already modeled via `user_id`), onboarding flow, maybe a landing page.
+Supabase auth and per-user data isolation (RLS) are already in place from v1. Remaining: onboarding flow, maybe a landing page.
 
 **Phase 3 — Smarter planning**
 Recovery signals, auto-suggested rest days, race taper templates, richer analytics (volume trends, training load over time).
 
 ## Open Questions
 
-- Google Calendar API OAuth setup — Google Cloud project with Calendar API already created; still need OAuth Client ID/Secret, consent screen scopes, and redirect URI once the app is scaffolded
+- Google Calendar credentials: the code is built and tested with mocks, but it needs an OAuth client (see the README's Google Calendar steps) before sync can be tried live.
+- UI flows (drag and drop, dialogs, rest timer) have no automated browser tests yet. Add Playwright if manual click-throughs stop being enough.
 
 ## Next Steps
 
@@ -86,4 +87,6 @@ All Phase 1 steps are built:
 4. ~~Build weekly calendar view~~
 5. ~~Build manual run logger~~
 6. ~~Wire up Google Calendar OAuth + sync~~ (code done; needs OAuth credentials)
+
+Testing, CI and setup are documented in the README.
 7. ~~Add conflict-check logic (user-configurable rules)~~

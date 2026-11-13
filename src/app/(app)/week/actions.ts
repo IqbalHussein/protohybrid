@@ -1,5 +1,10 @@
 "use server";
 
+// Server actions follow one pattern: validate the form here (so users get
+// specific messages), call a database function or RLS-guarded table, then
+// revalidate the pages that show the data. Ownership is enforced by RLS and
+// the database functions, not here.
+
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 import { parseDuration } from "@/lib/runs";

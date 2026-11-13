@@ -22,6 +22,9 @@ function busyTime(b: DayBusy): string {
   return `${formatTime(b.startMin)}–${b.endMin >= 1440 ? "24:00" : formatTime(b.endMin)}`;
 }
 
+// Mon–Sun columns of session cards and busy time. Cards drag between days
+// (moved optimistically, keeping their start time); each card's Move dialog is
+// the keyboard and touch alternative.
 export function WeekBoard({
   days,
   sessions,

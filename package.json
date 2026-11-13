@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "test:db": "node scripts/test-db.mjs"
+    "test:db": "node scripts/test-db.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run lint && npm test && npm run test:db"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
@@ -30,5 +32,8 @@
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2",
     "vitest": "^5.1.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

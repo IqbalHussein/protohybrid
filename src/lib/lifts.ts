@@ -2,6 +2,10 @@ import { SET_TYPES, type LiftSetInput, type SetType, type WeightUnit } from "./t
 import { isValidDate } from "./time";
 import { toStoredWeight } from "./units";
 
+// Lift maths (e1RM, volume) and validation of the lift and routine forms.
+// e1rm and sessionVolume mirror rebuild_prs() in 0003 so the UI and stored
+// PRs agree.
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function isUuid(value: unknown): value is string {

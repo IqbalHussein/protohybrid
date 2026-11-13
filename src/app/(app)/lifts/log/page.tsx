@@ -32,6 +32,11 @@ function routineGroups(items: Pick<RoutineExercise, "exercise_id" | "target_sets
   }));
 }
 
+// One form, three starting points:
+//   ?session=<id>  complete a planned lift (pre-filled from its routine)
+//   ?edit=<id>     edit a lift already logged (weights shown in the user's unit)
+//   ?routine=<id>  log a new lift starting from a routine
+// With none of these it starts blank. All of them save through log_lift.
 export default async function LogLiftPage({
   searchParams,
 }: {

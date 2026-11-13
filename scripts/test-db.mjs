@@ -264,6 +264,123 @@ check(Number((await one("select count(*) as n from personal_records")).n) > 0, "
 await as(A);
 check(Number((await one(`select count(*) as n from personal_records where exercise_id = '${B_CUSTOM}'`)).n) === 0, "A cannot see B's PRs");
 
+// ---- Editing a logged lift -------------------------------------------------
+// Replacing lift1's sets (squat + bench) with squat only must clear bench PRs
+// and renumber squat sets.
+await db.query("select log_lift($1, '2026-11-02', 'legs', 'edited', $2)", [
+  lift1,
+  sets([
+    { exercise_id: SQUAT, reps: 5, weight: 205 },
+    { exercise_id: SQUAT, reps: 2, weight: 225 },
+  ]),
+]);
+const edited = await q("select set_number, weight::text as w from lift_sets where lift_details_id = $1 order by set_number", [lift1]);
+check(JSON.stringify(edited.map((r) => `${r.set_number}:${r.w}`)) === '["1:205","2:225"]', `edit replaces sets: ${JSON.stringify(edited)}`);
+check(
+  (await q("select 1 from personal_records where session_id = $1 and exercise_id = $2", [lift1, BENCH])).length === 0,
+  "edit removes PRs for an exercise no longer in the lift",
+);
+check(
+  (await prs(SQUAT)).some((r) => r.t === "heaviest_weight" && r.d === "2026-11-02" && r.v === "225"),
+  "edit re-judges PRs with new weights",
+);
+check((await one("select status from sessions where id = $1", [lift1])).status === "completed", "edited lift stays completed");
+
+// ---- Validation on planning and routines -----------------------------------
+before = await sessionCount();
+await expectError("select plan_run('2026-11-05', 'easy', null, 0)", [], "Planned duration", "plan_run rejects 0 minutes");
+await expectError("select plan_run('2026-11-05', 'easy', null, null, -1)", [], "Target distance", "plan_run rejects negative distance");
+await expectError("select plan_run('2026-11-05', null)", [], "Run type", "plan_run requires run type");
+await expectError("select plan_lift('2026-11-05', '  ')", [], "Focus", "plan_lift requires focus");
+await expectError("select plan_lift('2026-11-05', 'legs', null, 2000)", [], "Planned duration", "plan_lift rejects > 1440 minutes");
+await expectError(
+  "select log_lift(null, '2026-11-02', 'legs', null, $1)",
+  [sets([{ exercise_id: SQUAT, reps: 1, weight: 5001 }])],
+  "weight",
+  "log_lift rejects weight over 5000",
+);
+check((await sessionCount()) === before, "failed planning writes nothing");
+await expectError(`select save_routine(null, 'Zero', '[{"exercise_id":"${SQUAT}","target_sets":0}]')`, [], "target sets", "save_routine rejects 0 sets");
+await expectError("select save_routine(null, '  ', $1)", [JSON.stringify([{ exercise_id: SQUAT }])], "name is required", "save_routine requires a name");
+await expectError("select save_routine(null, 'Empty', '[]')", [], "at least one exercise", "save_routine requires exercises");
+
+// ---- Run lifecycle odds and ends -------------------------------------------
+const tmpRun = (await one("select plan_run('2026-11-12', 'easy', '06:00') as id")).id;
+await db.query("select reschedule_session($1, '2026-11-12', null)", [tmpRun]);
+check((await one("select planned_start_time from sessions where id = $1", [tmpRun])).planned_start_time === null, "reschedule can clear the time");
+await db.query("select set_session_status($1, 'skipped')", [tmpRun]);
+check((await one("select status from sessions where id = $1", [tmpRun])).status === "skipped", "runs can be skipped");
+await db.query("select delete_session($1)", [tmpRun]);
+check(!(await one("select 1 as x from sessions where id = $1", [tmpRun])), "delete_session removes a run");
+check(!(await one("select 1 as x from run_details where session_id = $1", [tmpRun])), "deleting a run removes its details");
+
+// ---- Tables the app writes directly (busy blocks, rules, settings) ---------
+await db.query(
+  `insert into busy_blocks (user_id, title, start_time, end_time, source, google_event_id)
+   values ($1, 'Work', '2026-11-04T14:00Z', '2026-11-04T22:00Z', 'google_calendar', 'evt-1')
+   on conflict (user_id, google_event_id) do update set title = excluded.title`,
+  [A],
+);
+await db.query(
+  `insert into busy_blocks (user_id, title, start_time, end_time, source, google_event_id)
+   values ($1, 'Work (moved)', '2026-11-04T15:00Z', '2026-11-04T23:00Z', 'google_calendar', 'evt-1')
+   on conflict (user_id, google_event_id) do update set title = excluded.title`,
+  [A],
+);
+check(Number((await one("select count(*) as n from busy_blocks where google_event_id = 'evt-1'")).n) === 1, "sync upsert key dedupes events");
+await expectError(
+  "insert into busy_blocks (user_id, title, start_time, end_time, source) values ($1, 'x', '2026-11-04T10:00Z', '2026-11-04T09:00Z', 'manual')",
+  [A],
+  "busy_blocks_time_order",
+  "busy block end must be after start",
+);
+await db.query("insert into busy_blocks (user_id, title, start_time, end_time, source) values ($1, 'Class', '2026-11-05T14:00Z', '2026-11-05T15:00Z', 'manual')", [A]);
+await db.query("insert into exercise_rest_prefs (user_id, exercise_id, rest_seconds) values ($1, $2, 120)", [A, SQUAT]);
+await expectError("update exercise_rest_prefs set rest_seconds = 4000 where user_id = $1", [A], "check", "rest seconds capped at 3600");
+
+await as(B);
+await expectError(
+  "insert into busy_blocks (user_id, title, start_time, end_time, source) values ($1, 'x', '2026-11-04T09:00Z', '2026-11-04T10:00Z', 'manual')",
+  [A],
+  "row-level security",
+  "B cannot add busy time for A",
+);
+const bWrites = [
+  ["update busy_blocks set title = 'pwned'", "busy_blocks"],
+  ["update conflict_rules set enabled = false", "conflict_rules"],
+  ["update user_settings set weight_unit = 'kg'", "user_settings"],
+  ["update routines set name = 'pwned'", "routines"],
+  ["update exercise_rest_prefs set rest_seconds = 1", "exercise_rest_prefs"],
+  ["update oauth_connections set access_token = 'x'", "oauth_connections"],
+  ["delete from busy_blocks", "busy_blocks"],
+  ["delete from conflict_rules", "conflict_rules"],
+  ["delete from routines", "routines"],
+];
+for (const [sql, table] of bWrites) {
+  const res = await db.query(`${sql} where user_id = $1`, [A]);
+  check((res.affectedRows ?? 0) === 0, `B cannot change A's ${table} (${sql.split(" ")[0]})`);
+}
+await expectError(
+  "insert into exercises (name, is_custom, user_id) values ('x', true, $1)",
+  [A],
+  "row-level security",
+  "B cannot create custom exercises for A",
+);
+await expectError("select log_lift($1, '2026-11-03', 'legs', null, $2)", [lift1, sets([{ exercise_id: SQUAT, reps: 1 }])], "Lift not found", "B cannot edit A's lift");
+await db.query("select seed_default_conflict_rules()");
+check(Number((await one("select count(*) as n from conflict_rules")).n) === 4, "B gets their own default rules");
+
+await as(A);
+check(Number((await one("select count(*) as n from busy_blocks")).n) === 2, "A's busy blocks intact");
+check(Number((await one("select count(*) as n from conflict_rules where enabled")).n) === 4, "A's rules intact");
+check((await one("select name from routines where id = $1", [routine])).name === "Leg day v2", "A's routine intact");
+check(Number((await one("select count(*) as n from conflict_rules")).n) === 4, "A still sees only their own 4 rules");
+
+// ---- Signed in without a user id --------------------------------------------
+await db.exec("reset role; set role authenticated; select set_config('request.jwt.claim.sub', '', false)");
+await expectError("select ensure_plan('2026-11-03')", [], "Not authenticated", "ensure_plan needs a user");
+await expectError("select seed_default_conflict_rules()", [], "Not authenticated", "seeding needs a user");
+
 // ---- Re-apply after data exists ------------------------------------------
 await as(null);
 await db.exec("reset role");
