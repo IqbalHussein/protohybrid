@@ -22,6 +22,7 @@ function revalidate() {
   revalidatePath("/week");
   revalidatePath("/runs");
   revalidatePath("/lifts");
+  revalidatePath("/plan");
 }
 
 // "" -> null; "HH:MM" -> "HH:MM"; anything else -> undefined (invalid).

@@ -16,6 +16,7 @@ import type { ExerciseOption } from "./data";
 function revalidateLifts(sessionId?: string) {
   revalidatePath("/lifts", "layout");
   revalidatePath("/week");
+  revalidatePath("/plan");
   if (sessionId) revalidatePath(`/lifts/${sessionId}`);
 }
 
@@ -132,5 +133,6 @@ export async function deleteRoutine(formData: FormData) {
   if (error) throw new Error(`Routine not deleted: ${error.message}`);
   revalidatePath("/lifts", "layout");
   revalidatePath("/week");
+  revalidatePath("/plan");
   redirect("/lifts/routines");
 }

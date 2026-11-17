@@ -49,6 +49,7 @@ export async function logRun(_prev: ActionState, formData: FormData): Promise<Ac
 
   revalidatePath("/runs");
   revalidatePath("/week");
+  revalidatePath("/plan");
   return { ok: true, message: "Run logged." };
 }
 
@@ -82,6 +83,7 @@ export async function completeRun(_prev: ActionState, formData: FormData): Promi
 
   revalidatePath("/runs");
   revalidatePath("/week");
+  revalidatePath("/plan");
   return { ok: true, message: "Run completed." };
 }
 
@@ -93,6 +95,7 @@ export async function deleteRun(formData: FormData) {
   if (error) throw new Error(`Run not deleted: ${error.message}`);
   revalidatePath("/runs");
   revalidatePath("/week");
+  revalidatePath("/plan");
 }
 
 export async function skipRun(formData: FormData) {
@@ -103,4 +106,5 @@ export async function skipRun(formData: FormData) {
   if (error) throw new Error(`Run not skipped: ${error.message}`);
   revalidatePath("/runs");
   revalidatePath("/week");
+  revalidatePath("/plan");
 }
