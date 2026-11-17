@@ -36,6 +36,11 @@ export type Session = {
   planned_start_time: string | null;
   planned_duration_min: number | null;
   ad_hoc: boolean;
+  // Plan builder (0004). Null on sessions planned or logged by hand.
+  block_id: string | null;
+  intensity: "easy" | "moderate" | "hard" | null;
+  rationale: string | null;
+  prescription: Record<string, unknown> | null; // planner RunPrescription | LiftPrescription (+ slot)
 };
 
 export type RunDetails = {
@@ -166,6 +171,9 @@ export type MinHoursBetweenParams = {
 export type NoBackToBackHardParams = {
   hard_run_types: RunType[];
   hard_lift_focus: string[];
+  // When true, two hard sessions on the same day are not flagged (only
+  // consecutive days are). Optional; absent = false (v1 behaviour).
+  allow_same_day?: boolean;
 };
 export type MaxDaysWithoutRestParams = { max_days: number };
 export type BusyBlockOverlapParams = Record<string, never>;
@@ -190,6 +198,51 @@ export type ConflictRule =
   | (RuleBase & { rule_type: "busy_block_overlap"; session_type_a: null; session_type_b: null; params: BusyBlockOverlapParams });
 
 export type ConflictRuleType = ConflictRule["rule_type"];
+
+// ---- Plan builder (0004) --------------------------------------------------
+
+export type TrainingProfileRow = {
+  user_id: string;
+  preset: "builder" | "lifter" | "runner" | "hybrid" | null;
+  w_strength: number;
+  w_hypertrophy: number;
+  w_endurance: number;
+  days_per_week: number; // 2..7
+  minutes_per_day: number; // 10..300
+  minutes_by_weekday: Record<string, number>; // {"1": 45, ...} ISO weekday -> minutes
+  rest_days: number[]; // ISO weekdays 1..7
+  goal_type: "none" | "race" | "strength";
+  race_distance_km: number | null;
+  race_date: string | null;
+  experience: "beginner" | "intermediate" | "advanced";
+  created_at: string;
+  updated_at: string;
+};
+
+export type TrainingBlockRow = {
+  id: string;
+  user_id: string;
+  start_date: string; // Monday
+  weeks: number;
+  status: "active" | "replaced";
+  profile_snapshot: Record<string, unknown>;
+  relaxations: { constraint: string; title: string; detail: string }[];
+  generator_version: string;
+  summary: string | null;
+  created_at: string;
+};
+
+// One element of accept_training_block's p_sessions array.
+export type AcceptBlockSession = {
+  date: string; // YYYY-MM-DD, inside [start, start + 7 * weeks)
+  type: SessionType;
+  run_type: RunType | null; // required for runs
+  focus: string | null; // required for lifts
+  duration_min: number; // 1..1440
+  intensity: "easy" | "moderate" | "hard";
+  rationale: string; // <= 500 chars
+  prescription: Record<string, unknown>; // JSON object
+};
 
 // ---- RPC argument shapes (supabase.rpc(name, args)) -----------------------
 // All return the affected session/routine id (uuid string) unless noted.
@@ -245,6 +298,22 @@ export type RpcArgs = {
   set_session_status: { p_session_id: string; p_status: SessionStatus };
   delete_session: { p_session_id: string }; // returns void
   seed_default_conflict_rules: Record<string, never>; // returns void
+  // Returns the new block id. Replaces the caller's active block: its sessions
+  // that are still planned and dated >= p_today are deleted, logged/skipped
+  // ones are kept, and the old block is marked replaced.
+  accept_training_block: {
+    p_start_date: string; // Monday
+    p_weeks: number; // 1..12
+    p_today: string; // the user's local date
+    p_profile: Record<string, unknown>;
+    p_relaxations: { constraint: string; title: string; detail: string }[];
+    p_summary: string;
+    p_generator_version: string;
+    p_sessions: AcceptBlockSession[];
+    p_allow_same_day_hard: boolean; // sets allow_same_day on the user's no_back_to_back_hard rules
+  };
+  // Swaps date and start time of two planned sessions. Returns void.
+  swap_sessions: { p_session_a: string; p_session_b: string };
 };
 
 // weight in lb (convert from the user's unit before sending).
