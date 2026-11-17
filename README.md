@@ -56,12 +56,14 @@ Sync reads the primary calendar from 14 days back to 56 days ahead. It keeps tim
 | `0001_init.sql` | Historical. Don't run it. |
 | `0002_manual_run_log.sql` | Applied. Included in the replica. |
 | `0003_full_app.sql` | Applied 2026-11-03. Strava cleanup, the `weight_unit` setting, and every RPC the app calls. |
+| `0004_plan_builder.sql` | Not yet applied — apply before deploying the plan builder. |
 
 Data rules worth knowing:
 
 - **Ownership:** every table has row-level security keyed to `auth.uid()`. Multi-table writes go through `security invoker` functions in `0003`, so they run under the caller's RLS. Those functions also check that referenced rows (routines, exercises) are visible to the caller, because foreign keys bypass RLS.
 - **Weights:** lift weights are stored in **lb**. The kg setting converts for display and entry. Editing a lift without changing a weight keeps the stored value exactly.
 - **PRs:** `personal_records` is rebuilt in date order for the affected exercises whenever a lift is logged, edited, moved, skipped or deleted. Only working and to-failure sets count.
+- **Plan builder:** `training_profiles` (one row per user) and `training_blocks` (one `active` block per user, enforced by a partial unique index) are protected by RLS like everything else. Sessions carry optional `block_id`, `intensity`, `rationale` and `prescription`. `accept_training_block` validates everything before writing, replaces the active block by deleting its upcoming planned sessions (completed, skipped and past ones stay), and can set `allow_same_day` on the `no_back_to_back_hard` rule. `swap_sessions` swaps two planned sessions' dates.
 - **Time zones:** dates are local calendar dates. The browser's time zone is kept in a `tz` cookie (UTC until it's set), and busy blocks are stored as UTC instants.
 
 ### Changing the schema
