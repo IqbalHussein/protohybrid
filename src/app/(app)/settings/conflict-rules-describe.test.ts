@@ -31,6 +31,14 @@ describe("describeRule", () => {
     ).toBe("Warns when two hard sessions (tempo or race runs and legs lifts) fall on the same or consecutive days.");
   });
 
+  it("mentions when same-day pairs are allowed", () => {
+    expect(
+      describeRule(
+        rule({ rule_type: "no_back_to_back_hard", params: { hard_run_types: ["tempo"], hard_lift_focus: [], allow_same_day: true } }),
+      ),
+    ).toBe("Warns when two hard sessions (tempo runs) fall on consecutive days (same-day pairs allowed).");
+  });
+
   it("describes rest days and busy overlap", () => {
     expect(describeRule(rule({ rule_type: "max_days_without_rest", params: { max_days: 6 } }))).toBe(
       "Warns after more than 6 training days in a row without a rest day.",

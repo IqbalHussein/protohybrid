@@ -134,6 +134,15 @@ describe("conflict rule actions", () => {
     });
   });
 
+  it("saves no_back_to_back_hard with allow_same_day only when checked", async () => {
+    useDb(existing("no_back_to_back_hard"));
+    await saveRule({}, formData({ id: ID, name: "", hard_run_types: ["tempo"], hard_lift_focus: ["legs"], allow_same_day: "on" }));
+    expect(updated().params).toEqual({ hard_run_types: ["tempo"], hard_lift_focus: ["legs"], allow_same_day: true });
+    useDb(existing("no_back_to_back_hard"));
+    await saveRule({}, formData({ id: ID, name: "", hard_run_types: ["tempo"], hard_lift_focus: ["legs"] }));
+    expect(updated().params).toEqual({ hard_run_types: ["tempo"], hard_lift_focus: ["legs"] });
+  });
+
   it("stores a blank name as null and unchecked enabled as false", async () => {
     useDb(existing("busy_block_overlap"));
     await saveRule({}, formData({ id: ID, name: "  " }));

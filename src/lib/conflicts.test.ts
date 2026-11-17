@@ -158,6 +158,19 @@ describe("no_back_to_back_hard", () => {
     expect(out.some((c) => c.message.includes("back-to-back days (Mon 2 Nov and Tue 3 Nov)"))).toBe(true);
   });
 
+  it("allow_same_day skips same-day pairs but still flags consecutive days", () => {
+    const tempo = s({ type: "run", date: "2026-11-02", runType: "tempo" });
+    const legs = s({ type: "lift", date: "2026-11-03", liftFocus: "LEGS" });
+    const intervals = s({ type: "run", date: "2026-11-03", runType: "interval" });
+    const relaxed = { ...backToBack, params: { ...backToBack.params, allow_same_day: true } } as ConflictRule;
+    const out = detectConflicts([tempo, legs, intervals], [], [relaxed]);
+    expect(out).toHaveLength(2);
+    expect(out.some((c) => c.message.includes("are both on"))).toBe(false);
+    expect(detectConflicts([legs, intervals], [], [relaxed])).toHaveLength(0);
+    const explicitFalse = { ...backToBack, params: { ...backToBack.params, allow_same_day: false } } as ConflictRule;
+    expect(detectConflicts([legs, intervals], [], [explicitFalse])).toHaveLength(1);
+  });
+
   it("allows a day between and ignores easy sessions", () => {
     const tempo = s({ type: "run", date: "2026-11-02", runType: "tempo" });
     const easy = s({ type: "run", date: "2026-11-03", runType: "easy" });

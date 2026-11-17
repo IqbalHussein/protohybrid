@@ -151,12 +151,14 @@ function noBackToBackHard(rule: Extract<ConflictRule, { rule_type: "no_back_to_b
   const isHard = (s: ConflictSession) =>
     s.type === "run" ? hardRun.includes(s.runType ?? "") : hardLift.includes(lower(s.liftFocus));
   const hard = sessions.filter(isHard);
+  const allowSameDay = rule.params?.allow_same_day === true;
 
   const out: Conflict[] = [];
   for (let i = 0; i < hard.length; i++) {
     for (let j = i + 1; j < hard.length; j++) {
       const days = Math.abs(diffDays(hard[i].date, hard[j].date));
       if (days > 1) continue;
+      if (days === 0 && allowSameDay) continue;
       const [first, second] = ordered(hard[i], hard[j]);
       const when =
         days === 0

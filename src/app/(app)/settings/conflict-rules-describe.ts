@@ -33,6 +33,8 @@ export function describeRule(rule: ConflictRule): string {
         ...(arr(p.hard_run_types).length ? [`${list(arr(p.hard_run_types))} runs`] : []),
         ...(arr(p.hard_lift_focus).length ? [`${list(arr(p.hard_lift_focus))} lifts`] : []),
       ];
+      if (p.allow_same_day === true)
+        return `Warns when two hard sessions (${list(hard, "and")}) fall on consecutive days (same-day pairs allowed).`;
       return `Warns when two hard sessions (${list(hard, "and")}) fall on the same or consecutive days.`;
     }
     case "max_days_without_rest":

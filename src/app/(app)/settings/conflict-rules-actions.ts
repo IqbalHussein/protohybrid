@@ -80,7 +80,9 @@ function parseFields(type: ConflictRuleType, fd: FormData): RuleFields | { error
       if (!hardLift) return { error: "Lift focuses must be short names." };
       if (hardRun.length === 0 && hardLift.length === 0)
         return { error: "Choose at least one hard run type or lift focus." };
-      return { session_type_a: null, session_type_b: null, params: { hard_run_types: hardRun, hard_lift_focus: hardLift } };
+      const params: Record<string, unknown> = { hard_run_types: hardRun, hard_lift_focus: hardLift };
+      if (fd.get("allow_same_day") === "on") params.allow_same_day = true;
+      return { session_type_a: null, session_type_b: null, params };
     }
     case "max_days_without_rest": {
       const maxDays = Number(fd.get("max_days"));

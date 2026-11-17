@@ -127,6 +127,10 @@ function ParamFields({ rule }: { rule: ConflictRule }) {
             selected={arr(p.hard_lift_focus)}
             label={focusLabel}
           />
+          <label className="flex min-h-11 w-fit cursor-pointer items-center gap-3 text-sm has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-chalk">
+            <input type="checkbox" name="allow_same_day" defaultChecked={p.allow_same_day === true} className="size-5 accent-chalk" />
+            Allow two hard sessions on the same day
+          </label>
         </div>
       );
     case "max_days_without_rest":
