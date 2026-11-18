@@ -17,8 +17,40 @@ type SessionRow = {
   status: string;
   planned_date: string;
   routine_id: string | null;
+  prescription: Record<string, unknown> | null;
   lift_details: { focus: string; notes: string | null } | null;
 };
+
+// Exercises of a plan-builder lift prescription, matched by name (case
+// insensitive) against the library. Unmatched names are reported, not guessed.
+function prescriptionGroups(
+  prescription: Record<string, unknown> | null,
+  library: { id: string; name: string }[],
+): { groups: InitialGroup[]; missing: string[] } {
+  const groups: InitialGroup[] = [];
+  const missing: string[] = [];
+  if (prescription?.kind !== "lift" || !Array.isArray(prescription.exercises)) return { groups, missing };
+  const byName = new Map(library.map((e) => [e.name.trim().toLowerCase(), e.id]));
+  for (const raw of prescription.exercises as { name?: unknown; sets?: unknown; repsLow?: unknown }[]) {
+    const name = typeof raw.name === "string" ? raw.name : "";
+    const id = byName.get(name.trim().toLowerCase());
+    if (!id) {
+      if (name) missing.push(name);
+      continue;
+    }
+    const sets = Math.max(1, Math.min(20, Math.round(Number(raw.sets) || 1)));
+    groups.push({
+      exerciseId: id,
+      sets: Array.from({ length: sets }, () => ({
+        setType: "working" as SetType,
+        reps: Number.isFinite(Number(raw.repsLow)) && Number(raw.repsLow) > 0 ? String(Number(raw.repsLow)) : "",
+        weight: "",
+        rpe: "",
+      })),
+    });
+  }
+  return { groups, missing };
+}
 
 function routineGroups(items: Pick<RoutineExercise, "exercise_id" | "target_sets" | "target_reps">[]): InitialGroup[] {
   return items.map((r) => ({
@@ -73,7 +105,7 @@ export default async function LogLiftPage({
     if (!isUuid(sessionParam)) notFound();
     const { data: session } = await supabase
       .from("sessions")
-      .select("id, type, status, planned_date, routine_id, lift_details(focus, notes)")
+      .select("id, type, status, planned_date, routine_id, prescription, lift_details(focus, notes)")
       .eq("id", sessionParam)
       .maybeSingle<SessionRow>();
     if (!session || session.type !== "lift") notFound();
@@ -101,6 +133,16 @@ export default async function LogLiftPage({
     }));
 
     let routineName: string | null = null;
+    let fromPlan = false;
+    let missingNames: string[] = [];
+    if (groups.length === 0 && !session.routine_id && session.prescription?.kind === "lift") {
+      const planned = prescriptionGroups(session.prescription, exercises);
+      if (planned.groups.length > 0 || planned.missing.length > 0) {
+        groups = planned.groups;
+        missingNames = planned.missing;
+        fromPlan = true;
+      }
+    }
     if (groups.length === 0 && session.routine_id) {
       const routine = await loadRoutine(session.routine_id);
       if (routine) {
@@ -122,7 +164,9 @@ export default async function LogLiftPage({
     } else {
       title = "Log planned lift";
       submitLabel = "Complete lift";
-      context = `Planned for ${formatDateLabel(session.planned_date)}${routineName ? ` from ${routineName}` : ""}. If you did it on another day, change the date.`;
+      context = fromPlan
+        ? `Planned for ${formatDateLabel(session.planned_date)} from your plan.${missingNames.length > 0 ? ` Not in your library: ${missingNames.join(", ")}.` : ""} If you did it on another day, change the date.`
+        : `Planned for ${formatDateLabel(session.planned_date)}${routineName ? ` from ${routineName}` : ""}. If you did it on another day, change the date.`;
     }
   } else if (params.routine) {
     if (!isUuid(params.routine)) notFound();
