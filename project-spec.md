@@ -35,7 +35,7 @@ Treat lifting and running as one training load, not two logs. The app's job is a
 
 - Recovery/HRV scoring or auto-adjusting plans
 - Third-party run imports (Strava, Garmin) — runs are logged manually
-- Auto-generated training plans (AI coach, periodization templates)
+- AI coach, nutrition and recovery logging (the rule-based plan builder shipped in 2.0; the coach can call the same `src/lib/planner` module later)
 - Multi-user accounts, social features, sharing
 - Mobile app (web only for now, mobile-responsive is enough)
 

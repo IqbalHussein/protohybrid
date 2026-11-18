@@ -10,6 +10,7 @@ Next.js 15 (App Router, Server Actions, TypeScript, Tailwind 3) and Supabase (Po
 
 ## Features
 
+- **Plan** (`/plan`): a one-screen training profile (preset, strength/hypertrophy/endurance weights, days, minutes per day, rest days, goal, experience) generates a 4-week block (3 build + 1 deload). Preview it, accept it to write ordinary planned sessions, then log, move or swap them. Each session says why it was placed there, and any constraint the plan had to relax is listed with the reason.
 - **Week** (`/week`): plan runs and lifts Mon–Sun, drag to reschedule (or use Move on a card), planned vs actual, busy time from Google Calendar or added by hand, and conflict warnings. The load strip at the top shows each day's minutes.
 - **Lifts** (`/lifts`): log sets against the exercise library (plus custom exercises), start from routines, a per-exercise rest timer, and history and PRs per exercise.
 - **Runs** (`/runs`): log runs, complete planned runs, and compare target vs actual.
@@ -86,6 +87,7 @@ npm run test:db   # database tests only (PGlite)
 
 | Area | What's covered |
 | --- | --- |
+| `src/lib/planner` | Every named constraint; a scenario matrix (4 presets x 3-6 days x 45/60/90 min) asserting time budget, interference, ~80/20, key-run spacing and progression; edge cases (2 and 7 days, 20-min days, conflicting goals, race inside the block, per-day budgets); determinism |
 | `src/lib` | Time zones and DST, week maths, units, run parsing and formatting, lift and routine form parsing, e1RM and volume, the conflict engine (every rule type, thresholds, week boundaries), Google event filtering, token refresh, pagination, sync pruning, disconnect, settings helpers |
 | Server actions (`src/app/(app)/**/actions.test.ts`) | Form validation and messages, the exact RPC or table call made, unit conversion on save, error handling, revalidation |
 | Routes and middleware | Google OAuth start and callback (CSRF state, denied consent, missing scope, keeping the refresh token), the magic-link callback, and the sign-in redirects |
@@ -119,12 +121,13 @@ Apply any new migration before deploying code that depends on it.
 ## Structure
 
 ```
-src/app/(app)/          Signed-in pages: week, lifts, runs, settings (each with actions.ts)
+src/app/(app)/          Signed-in pages: week, plan, lifts, runs, settings (each with actions.ts)
 src/app/login, auth/    Magic-link sign-in and callback
 src/app/api/auth/google Google Calendar OAuth start and callback
 src/middleware.ts       Session refresh and the sign-in redirect
 src/components/ui/      Design-system primitives (Button, Field, Panel, Dialog, ...)
-src/lib/                Shared logic: types, time, units, runs, lifts, conflicts, google, settings
+src/lib/planner/        Plan generator: pure and deterministic (profile in, block out); constraints/ has one file per rule
+src/lib/                Shared logic: types, time, units, runs, lifts, conflicts, google, settings, training-profile
 src/test/               Test helpers (fake Supabase client)
 supabase/migrations/    SQL migrations
 supabase/tests/         Live-schema replica used by the database tests
