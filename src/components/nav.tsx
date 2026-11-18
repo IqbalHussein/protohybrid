@@ -6,6 +6,7 @@ import { cn } from "@/lib/cn";
 
 const LINKS = [
   { href: "/week", label: "Week" },
+  { href: "/plan", label: "Plan" },
   { href: "/lifts", label: "Lifts" },
   { href: "/runs", label: "Runs" },
   { href: "/settings", label: "Settings" },
@@ -42,7 +43,7 @@ export function TabNav() {
   return (
     <nav
       aria-label="Main"
-      className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-ink-line bg-ink pb-[env(safe-area-inset-bottom)] lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-ink-line bg-ink pb-[env(safe-area-inset-bottom)] lg:hidden"
     >
       {LINKS.map((l) => (
         <Link
